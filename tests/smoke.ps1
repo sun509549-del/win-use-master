@@ -242,6 +242,20 @@ try {
     if ($LASTEXITCODE) { throw "restore 后 shot exit=$LASTEXITCODE" }
     Write-Output 'window-state: minimize/restore no-activate PASS'
 
+    # COM identity check must stay registry-only under --dry (no instance started),
+    # and must fail cleanly for an unknown ProgID.
+    $comDry = @(& $win com Scripting.FileSystemObject --dry)
+    if ($LASTEXITCODE -or (($comDry -join "`n") -notmatch 'clsid=\{[0-9A-F-]+\}' -or ($comDry -join "`n") -notmatch 'dry: 未实例化')) {
+        throw "com --dry 没有给出注册表身份：$($comDry -join ' ')"
+    }
+    $comMissing = @(& $hostExe -NoProfile -File $win com 'WinUse.Nonexistent.ProgID' --dry 2>&1)
+    if ($LASTEXITCODE -ne 1 -or (($comMissing -join "`n") -notmatch '没有 ProgID')) {
+        throw "com 对不存在的 ProgID 没有明确失败：$($comMissing -join ' ')"
+    }
+    $rawList = @(& $win windows 'smoke fixture' --all --raw)
+    if ($LASTEXITCODE -or -not @($rawList | Where-Object { $_ -match "^id=$hwnd " }).Count) { throw 'windows --all --raw 没有列出 fixture。' }
+    Write-Output 'com-dry/windows-raw: PASS'
+
     $notepad = Join-Path $env:SystemRoot 'System32\notepad.exe'
     $bgDry = @(& $win open $notepad --background --dry)
     if ($LASTEXITCODE -or (($bgDry -join ' ') -notmatch 'background=True')) {

@@ -22,7 +22,7 @@
 - PowerShell 7 + Node.js 24 是当前开发/CI 基线；Node.js 22+ 属支持范围。
 - `scripts/HuWin.dll` 是生成物，不提交；`win.ps1` 会在缺失或源码更新时重编译。
 - 收据 schema 已统一为 `win-use-master/receipt-v1`、`win-use-master/uia-map-v1`、`win-use-master/action-receipt-v1`。
-- 完整可重放档案有五个：计算器 11.x（UWP 宿主 + InvokePattern）、记事本 11.x（Document ValuePattern 可逆写）、WorkBuddy AI 5.4.2（CDP 零焦点 insert/撤回；需用户先以 `--cdp` 启动授权实例）、Excel 16.x（L0 COM 私有实例写表→另存→不经 Excel 验证）、WPS 表格 12.x（KET.Application 私有实例，同任务 + 第二实例重开读回）。只读档案：QQ 9.9（Electron，UIA 树可读、PrintWindow 完整、无 CDP）、剪映 10.4（可见态 PrintWindow 完整、UIA provider 挂死被 worker 终止）。`app档案.md` 已有跨 app 共性结论一节。Blender 未安装。证据图、快照原文不入库。
+- 完整可重放档案有五个：计算器 11.x（UWP 宿主 + InvokePattern）、记事本 11.x（Document ValuePattern 可逆写）、WorkBuddy AI 5.4.2（CDP 零焦点 insert/撤回；需用户先以 `--cdp` 启动授权实例）、Excel 16.x（L0 COM 私有实例写表→另存→不经 Excel 验证）、WPS 表格 12.x（KET.Application 私有实例，同任务 + 第二实例重开读回）。只读档案：QQ 9.9（Electron，UIA 树可读、PrintWindow 完整、无 CDP）、微信 4.1（Qt5，UIA 空树、PrintWindow 完整、无 CDP）、剪映 10.4（可见态 PrintWindow 完整、UIA provider 挂死被 worker 终止）。`app档案.md` 有跨 app 共性结论一节（8 个 app），`references/踩坑实录.md` 记录了工具为何如此。Blender 未安装。证据图、快照原文不入库。
 
 ## 3. 代码地图
 
@@ -38,6 +38,7 @@
 | `references/权限与故障.md` | UIPI、锁屏、虚拟桌面、截图/UIA/CDP/HUD 故障处理 |
 | `references/取证规范.md` | before/action/after、哈希、隐私、归档和跑批 |
 | `references/app档案.md` | 易腐的 per-app 实测模板及计算器档案 |
+| `references/踩坑实录.md` | 每条闸/提示/测试断言的来历：现象→归因→落点→证据；Mac 结论在 Windows 上被推翻的记录 |
 | `references/与mac版差距.md` | 已对齐能力、平台差异和待办优先级 |
 | `.github/workflows/ci.yml` | 非交互 Windows CI |
 
@@ -80,7 +81,8 @@
 - `windows --all` 对不可见窗口输出 `state=hidden`；`shot` 对它们直说“不可见，空帧是预期”，`shotfg` 直接退出 2，不借前台。
 - `restore`/`minimize` 是用户明确要求时才用的窗口状态命令：`SW_SHOWNOACTIVATE`/`SW_SHOWMINNOACTIVE` 不改前台；只对可见（含最小化）窗口生效，隐藏窗口拒绝；打印 before/after，看完要 `minimize` 还原用户布局。
 - `PrintWindow` 首次直接失败（非空帧）时只重试一次（400 ms）；刚 `restore` 的窗口首帧会这样。不是循环重试。
-- L0 COM：`New-Object -ComObject` 总是新起私有进程；只对新 pid 写/存/Quit，预存在的进程一律不 Quit；COM 对象不经 PowerShell 函数返回；全部 RCW 释放后再 Quit；用 Hwnd→pid→exe 核对身份（WPS 抢注了 Excel 的 ProgID/类名/Name）。
+- L0 COM：`New-Object -ComObject` 总是新起私有进程；只对新 pid 写/存/Quit，预存在的进程一律不 Quit；COM 对象不经 PowerShell 函数返回；全部 RCW 释放后再 Quit；用 Hwnd→pid→exe 核对身份（WPS 抢注了 Excel 的 ProgID/类名/Name）。`win.ps1 com` 只做“注册视图 + 身份核对 + Quit 私有实例”，不读写文档。
+- `windows --all` 折叠不可见且 0 尺寸/无标题小尺寸的消息窗（Qt/CEF 动辄几百个）；`--raw` 才是完整列表。可见窗口与最小化窗口永不折叠。
 - `open --background` 不得假装一定不抢前台；必须回读。禁止用 `PostMessage` 或注入去做“后台启动”。
 - `scrollin --horizontal` 与纵向共用 200 步上限。
 - 像素或 DOM 变化最多证明 `partial`，最终判据优先级是：业务副作用 > 状态指示器 > 控件读回 > 可见文字 > API 返回。
@@ -151,7 +153,9 @@ pwsh -NoProfile -File tests/wps-et-com-profile.ps1
 
 1. P1：剪映 CEF 是否接受 `--remote-debugging-port`、「版本更新」弹窗可见态截图；都需要用户授权重启或显示，不得自行 ShowWindow。
 2. P1：QQ 聊天输入框的 UIA/CDP 写路径未测（停手线附近，需用户指定一个可逆目标）。
-3. P1：制作经脱敏的真实 Windows 案例和架构图；起稿 `踩坑实录.md`（今天已有足够可复现素材）。
+3. P1：制作经脱敏的真实 Windows 案例和架构图。
+4. P2：微信是 Qt5 空树 + 无 CDP 的典型，L2 写路径（需用户指定可逆目标）能补上“只有坐标可走”的第一个真实样本。
+5. P2：Blender 安装后按 Mac 的 bpy 路线补 L0 CLI 创作型案例。
 4. P2：把本项目特有、可复现且不能编码消除的失败过程整理进 `踩坑实录.md`；不要复制 Mac 结论凑文档。
 
 ## 9. 常见误判

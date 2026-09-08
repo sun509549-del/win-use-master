@@ -163,7 +163,7 @@ Windows `SendInput` 是全局输入流，不携带目标 PID/HWND。工具会短
 
 `PrintWindow` 是请目标 app 自己绘制，不是桌面合成真相。最小化、硬件加速、视频、游戏、受保护内容和某些 Chromium 窗口可能返回黑图、空图或旧帧，即使 API 返回成功。反过来，判空启发式也会把空白文档当成空图：空的记事本和黑壳窗口在内容区都是 1 个颜色桶，整帧都约 20 桶。所以收据在内容区单色时额外记录 `frameColorBuckets`，`see` 会用 UIA 读到的空 Document/Edit 说明“这是空文档不是截图失败”，`shotfg` 在这种情况下不会借前台。`shotfg` 只是在后台图接近纯色且无法用语义解释时短暂借前台，并在有限窗口内等待两张连续非空帧。窗口在当前桌面时，用 `screen --window` 做桌面合成交叉验证（图中含遮挡物）。若目标进程树已有 CDP，空图诊断会给出准确端口和替代命令。
 
-`open --background` 请求首个窗口不激活，属 best effort；工具会回读前台是否被抢。`scrollin --horizontal` 发送横向滚轮。`probe.ps1` 会只读枚举指向该 exe 的 COM LocalServer32/TypeLib。
+`open --background` 请求首个窗口不激活，属 best effort；工具会回读前台是否被抢。`scrollin --horizontal` 发送横向滚轮。`probe.ps1` 会只读枚举指向该 exe 的 COM LocalServer32/TypeLib；`com <ProgID> --dry` 进一步分开显示 64 位与 32 位注册表视图各指向哪个 exe（本机 `Excel.Application` 在 64 位视图是微软 Excel、32 位视图是 WPS 的 `et.exe`），去掉 `--dry` 会新起一个私有自动化实例、按 `Hwnd → pid → exe` 核对身份后 Quit 它，从不碰已存在的进程。
 
 ## 安全模型
 
@@ -199,7 +199,7 @@ $WIN = "$SKILL_DIR\scripts\win.ps1"
 ### 读取（不抢焦点）
 
 ```text
-win.ps1 windows [关键词] [--all]
+win.ps1 windows [关键词] [--all] [--raw]   # --all 含隐藏/最小化窗口；--raw 连 Qt/CEF 的无标题消息窗也列
 win.ps1 see <hwnd|pid|owner> [path]        # --out 仅进程内 & 调用可用
 win.ps1 shot <hwnd|owner> <path>
 win.ps1 shotfg <hwnd|owner> <path>         # 后台近空图时才借前台重试 PrintWindow
@@ -235,6 +235,7 @@ win.ps1 op <target> <x> <y> <text> [@shot.png] [--replace] [shot out.png]
 
 ```text
 win.ps1 open <显示名|进程名|exe路径> [--cdp port] [--relaunch] [--background] [--dry]
+win.ps1 com <ProgID> [--dry]                  # COM 身份核对：--dry 只读 64/32 位注册；否则新起私有实例核对 exe 后 Quit
 win.ps1 hud [毫秒] [文案] [corner|glow|plain]
 probe.ps1 <显示名|进程名|exe/lnk/目录路径>
 
@@ -274,7 +275,7 @@ node "$SKILL_DIR/scripts/cdp.js" <port> shot|eval ...
 - 不自动提权、不关闭 UAC/Defender/SmartScreen、不注入进程、不强杀 app。
 - CDP 调试端口暴露的是强能力；只绑定本机、只针对用户授权的 app，用完关闭实例。
 
-维护交接见 [`HANDOFF.md`](HANDOFF.md)。详细原理见 [`references/控制面详解.md`](references/控制面详解.md)，故障与权限见 [`references/权限与故障.md`](references/权限与故障.md)，证据落盘见 [`references/取证规范.md`](references/取证规范.md)，单 app 易腐经验见 [`references/app档案.md`](references/app档案.md)，与原 Mac 版的差距和优先级见 [`references/与mac版差距.md`](references/与mac版差距.md)。
+维护交接见 [`HANDOFF.md`](HANDOFF.md)。详细原理见 [`references/控制面详解.md`](references/控制面详解.md)，故障与权限见 [`references/权限与故障.md`](references/权限与故障.md)，证据落盘见 [`references/取证规范.md`](references/取证规范.md)，单 app 易腐经验与跨 app 共性结论见 [`references/app档案.md`](references/app档案.md)，翻车过程与工具为何如此见 [`references/踩坑实录.md`](references/踩坑实录.md)，与原 Mac 版的差距和优先级见 [`references/与mac版差距.md`](references/与mac版差距.md)。
 
 ## 仓库结构
 
@@ -311,6 +312,7 @@ win-use-master/
     ├── 权限与故障.md
     ├── 取证规范.md
     ├── app档案.md
+    ├── 踩坑实录.md       # 为什么闸/提示/断言长这样：Windows 自己踩过的坑与推翻的结论
     └── 与mac版差距.md
 ```
 

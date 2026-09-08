@@ -890,7 +890,7 @@ function Show-Usage {
 win-use-master — Windows 原生 app 的分层操控与可复现取证
 
 读取（不抢焦点）:
-  win.ps1 windows [关键词] [--all]
+  win.ps1 windows [关键词] [--all] [--raw]     # --all 含隐藏/最小化；--raw 连无标题消息窗也列
   win.ps1 see <hwnd|pid|owner> [path]          # 也接受 --out path，但 pwsh -File 下只能用位置参数
   win.ps1 shot <hwnd|owner> <path>
   win.ps1 shotfg <hwnd|owner> <path>          # 后台空图才短暂借焦点
@@ -914,6 +914,7 @@ win-use-master — Windows 原生 app 的分层操控与可复现取证
 
 应用与状态:
   win.ps1 open <显示名|进程名|exe路径> [--cdp port] [--relaunch] [--background] [--dry]
+  win.ps1 com <ProgID> [--dry]                 # COM 身份核对：--dry 只读 64/32 位注册；否则新起私有实例核对 exe 后 Quit
   win.ps1 hud [毫秒] [文案] [corner|glow|plain]
   probe.ps1 <显示名|进程名|exe路径>
   node cdp.js <port> list|snapshot|find|wait|mouse|insert|press|shot|eval|act
@@ -931,16 +932,22 @@ switch ($Command.ToLowerInvariant()) {
 
     'windows' {
         $all = $CommandArgs -contains '--all'
-        $filter = @($CommandArgs | Where-Object { $_ -ne '--all' } | Select-Object -First 1)
-        $hidden = 0
+        $raw = $CommandArgs -contains '--raw'
+        $filter = @($CommandArgs | Where-Object { $_ -notin @('--all', '--raw') } | Select-Object -First 1)
+        $hidden = 0; $folded = 0
         foreach ($w in (Get-HuWindows | Sort-Object Owner, Hwnd)) {
             if ($filter.Count -and
                 $w.Owner.IndexOf($filter[0], [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
                 $w.Title.IndexOf($filter[0], [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
             if (-not $all -and (Test-JunkWindow $w)) { $hidden++; continue }
+            # Qt/CEF apps create hundreds of invisible message-only windows (0x0,
+            # 202x56, 1x1). They are never a capture or UIA target; fold them even
+            # under --all unless --raw asks for the complete list.
+            if ($all -and -not $raw -and -not $w.Visible -and (($w.W -eq 0 -or $w.H -eq 0) -or ([string]::IsNullOrWhiteSpace($w.Title) -and ($w.W -lt 100 -or $w.H -lt 60)))) { $folded++; continue }
             Write-Output (Format-Window $w)
         }
         if ($hidden) { Write-Output "（已隐藏 $hidden 个系统残留/浮层窗口；加 --all 显示）" }
+        if ($folded) { Write-Output "（已折叠 $folded 个无标题的隐藏消息窗；加 --raw 全部显示）" }
         break
     }
 
@@ -1417,6 +1424,73 @@ switch ($Command.ToLowerInvariant()) {
     'frontmost' {
         $fg = [HuWin]::ForegroundWindow().ToInt64(); $front = @((Get-HuWindows) | Where-Object { $_.Hwnd -eq $fg })
         if ($front.Count) { Write-Output (Format-Window $front[0]) } else { Write-Output (Format-Hwnd $fg) }
+        break
+    }
+
+    # L0 COM identity check. Registry part is read-only and shows who answers the
+    # ProgID in the 64-bit and 32-bit views (WPS hijacks Excel's ProgIDs in the
+    # 32-bit view). Without --dry it CoCreates the object, which for Office-style
+    # servers starts a private /automation process; that process is the only one
+    # this command will Quit. Anything preexisting is never touched.
+    'com' {
+        if (-not $CommandArgs.Count -or $CommandArgs[0].StartsWith('--')) { Stop-Hu '用法: win.ps1 com <ProgID> [--dry]（--dry 只读注册表；否则会新起私有实例做身份核对后 Quit）' }
+        $progId = $CommandArgs[0]
+        $clsid = $null
+        try { $clsid = [string](Get-ItemProperty -LiteralPath "Registry::HKEY_CLASSES_ROOT\$progId\CLSID" -ErrorAction Stop).'(default)' } catch { }
+        if (-not $clsid) { Stop-Hu "注册表里没有 ProgID「$progId」（HKCR\$progId\CLSID 不存在）。" 1 }
+        $server64 = try { [string](Get-ItemProperty -LiteralPath "Registry::HKEY_CLASSES_ROOT\CLSID\$clsid\LocalServer32" -ErrorAction Stop).'(default)' } catch { '' }
+        $server32 = try { [string](Get-ItemProperty -LiteralPath "Registry::HKEY_CLASSES_ROOT\WOW6432Node\CLSID\$clsid\LocalServer32" -ErrorAction Stop).'(default)' } catch { '' }
+        $inproc64 = try { [string](Get-ItemProperty -LiteralPath "Registry::HKEY_CLASSES_ROOT\CLSID\$clsid\InprocServer32" -ErrorAction Stop).'(default)' } catch { '' }
+        Write-Output "com $progId clsid=$clsid host=$(if ([Environment]::Is64BitProcess) { '64' } else { '32' })-bit pwsh"
+        Write-Output "  64-bit LocalServer32: $(if ($server64) { $server64 } elseif ($inproc64) { "(InprocServer32) $inproc64" } else { '<无>' })"
+        Write-Output "  32-bit LocalServer32: $(if ($server32) { $server32 } else { '<无>' })"
+        if ($server64 -and $server32 -and ($server64 -ne $server32)) {
+            Write-Output '  ⚠️ 两个视图指向不同的 exe：64 位宿主与 32 位宿主拿到的不是同一个 app。不要按名字判断，按 exe 路径。'
+        }
+        if ($script:Dry) { Write-Output 'dry: 未实例化。去掉 --dry 会 CoCreate（多数 Office 类 app 会新起一个私有自动化进程），核对身份后 Quit 该私有实例。'; break }
+
+        $beforePids = [Collections.Generic.HashSet[int]]::new()
+        foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) { [void]$beforePids.Add([int]$p.Id) }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $obj = $null
+        try { $obj = New-Object -ComObject $progId -ErrorAction Stop }
+        catch { Stop-Hu "CoCreate 失败: $($_.Exception.Message)" 1 }
+        $createdMs = $clock.ElapsedMilliseconds
+        Start-Sleep -Milliseconds 400
+        $newProcs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { -not $beforePids.Contains([int]$_.Id) })
+        $facts = [ordered]@{}
+        foreach ($prop in @('Name', 'Version', 'Build', 'Path', 'Visible', 'UserControl')) {
+            try { $v = $obj.$prop; if ($null -ne $v) { $facts[$prop] = [string]$v } } catch { }
+        }
+        $hwnd = 0L; try { $hwnd = [long]$obj.Hwnd } catch { }
+        $ownerPid = 0; $ownerExe = ''
+        if ($hwnd) {
+            $ownerWin = @((Get-HuWindows) | Where-Object { $_.Hwnd -eq $hwnd } | Select-Object -First 1)
+            if ($ownerWin.Count) { $ownerPid = [int]$ownerWin[0].Pid; try { $ownerExe = (Get-Process -Id $ownerPid -ErrorAction Stop).Path } catch { } }
+        }
+        if (-not $ownerPid -and $newProcs.Count) { $ownerPid = [int]$newProcs[0].Id; try { $ownerExe = $newProcs[0].Path } catch { } }
+        $private = ($ownerPid -ne 0) -and -not $beforePids.Contains($ownerPid)
+        Write-Output ("created in {0}ms; new processes: {1}" -f $createdMs, $(if ($newProcs.Count) { ($newProcs | ForEach-Object { "$($_.Id) $($_.ProcessName)" }) -join ', ' } else { '<无，可能挂进了已运行实例或是进程内服务器>' }))
+        Write-Output ("identity: {0} hwnd={1} pid={2} exe={3} private-instance={4}" -f (($facts.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ' '), $(if ($hwnd) { Format-Hwnd $hwnd } else { '<无>' }), $ownerPid, $(if ($ownerExe) { $ownerExe } else { '<未知>' }), $private)
+        if ($server32 -and $ownerExe -and $server32.IndexOf([IO.Path]::GetFileName($ownerExe), [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $server64 -and $server64.IndexOf([IO.Path]::GetFileName($ownerExe), [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            Write-Output '  ⚠️ 应答者是 32 位视图里注册的 exe，不是 64 位视图里的那个。'
+        }
+        $quitState = 'skipped（非私有实例或无 Quit，不能动用户会话）'
+        if ($private) {
+            try { $obj.Quit(); $quitState = 'called' } catch { $quitState = "no Quit: $($_.Exception.Message.Split([char]10)[0])" }
+        }
+        try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($obj) } catch { }
+        $obj = $null
+        [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+        if ($private -and $quitState -eq 'called') {
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            while ((Get-Process -Id $ownerPid -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+            $exited = -not [bool](Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)
+            $quitState += "; exited within 30s: $exited"
+            if (-not $exited) { $quitState += "（Excel 类 app 在从未打开文档时 Quit 后可滞留数分钟，最终随 DCOM 超时退出；不强杀。pid=$ownerPid 是本命令新起的私有实例）" }
+        }
+        Write-Output "teardown: quit=$quitState"
+        Write-Output '说明: 只核对身份，不读写文档。真正的对象模型调用请写脚本：先 Workbooks/Documents.Add 再设 Visible，COM 对象不经函数返回，RCW 全释放后再 Quit。'
         break
     }
 

@@ -30,18 +30,19 @@
 | 编辑器正文不进日志 | 采集时打 `editable` 标记，`role=textbox` 的 Slate/ProseMirror 差分只显示字符数；无头 Edge 回归守住 |
 | 隐藏窗口不误判 | `windows --all` 标 `state=hidden`；`shot` 直说不可见、`screen`/L2/`shotfg` 拒绝 |
 | 用户要求时还原/最小化窗口 | `restore`/`minimize`：`SW_SHOW*NOACTIVE` 不改前台，隐藏窗口拒绝，打印前后状态（Mac 靠 `mac open` 激活） |
-| COM 作为 L0 的真实写路径 | Excel/WPS 两个私有实例档案：身份核对、Visible 时机、RCW 释放、不经宿主验证文件 |
+| COM 作为 L0 的真实写路径 | Excel/WPS 两个私有实例档案：身份核对、Visible 时机、RCW 释放、不经宿主验证文件；`win.ps1 com <ProgID>` 做注册视图与身份核对（Mac 对应 `sdef`） |
+| 窗口列表可读 | `windows --all` 折叠 Qt/CEF 的几百个无标题消息窗，`--raw` 才全列 |
 | app 经验回流与版本自检 | `app档案.md`、30 天静默版本检查 |
 
 ## 仍缺少或样本不足
 
 | 优先级 | 差距 | 当前状态 / 完成标准 |
 |---|---|---|
-| P1 | 真实 app 档案广度 | 完整可重放档案五个：计算器（Invoke）、记事本（Document ValuePattern）、WorkBuddy（CDP 零焦点写/撤回）、Excel（COM 私有实例写表另存并不经 Excel 验证）、WPS 表格（KET.Application 同任务 + 二次打开）。只读档案：QQ（UIA 可读、PrintWindow 完整、无 CDP）、剪映（可见态截图完整、UIA 挂死）。Mac 有 11 个 app；Windows 7 个，且 Blender、微信、系统设置类样本仍缺。 |
-| P1 | 跨 app 共性结论 | 已有 8 条（`app档案.md` 四·五节），每条 ≥2 个实现复现；比 Mac 的 9 条少一轮验证周期。 |
+| P1 | 真实 app 档案广度 | 完整可重放档案五个：计算器（Invoke）、记事本（Document ValuePattern）、WorkBuddy（CDP 零焦点写/撤回）、Excel（COM 私有实例写表另存并不经 Excel 验证）、WPS 表格（KET.Application 同任务 + 二次打开）。只读档案：QQ（UIA 可读）、微信（Qt5 UIA 空树）、剪映（UIA 挂死），三者 PrintWindow 都完整、都无 CDP。Mac 11 个 app；Windows 8 个，Blender、系统设置类样本仍缺，微信/QQ 的写路径未测。 |
+| P1 | 跨 app 共性结论 | 已有 8 条（`app档案.md` 四·五节，8 个 app），每条 ≥2 个实现复现；比 Mac 的 9 条少一轮证伪周期。 |
 | P1 | 面向用户的真实案例与视觉素材不足 | Mac 版有 Blender/桌面客户端案例、GIF 和架构图；Windows 版目前重工程验证、轻展示。需要经脱敏的 Windows 原生/UIA/CDP 案例与架构图，但不能拿测试 fixture 冒充生产案例。 |
 | P1 | 单 app 经验的广度不足 | Mac 档案覆盖多个 Electron 和原生 app；Windows 需要随真实任务渐进积累，不能凭框架名称推断 UIA/CDP/截图一定可用。 |
-| P2 | 翻车过程文档尚未独立沉淀 | 原理、故障、证据、app 档案已拆分，但没有对应 `踩坑实录.md`。只有出现可复现且不能编码消除的教训时再补，避免复制 Mac 结论。 |
+| P2 | 翻车过程文档 | `references/踩坑实录.md` 已起稿：21 条现象→归因→落点→证据，另有“哪些 Mac 结论在 Windows 上不成立”一节。比 Mac 的 519 行薄，但每条都对应今天的代码改动或档案条目。 |
 
 ## 不应照搬的“差距”
 

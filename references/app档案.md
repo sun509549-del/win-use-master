@@ -603,21 +603,74 @@ L3_capture:
   - `windows --all` 里的隐藏窗口过去也显示 state=current → 2026-09-08 已编码为 state=hidden，`shot` 空帧时直说不可见，L2/shotfg 拒绝。
 ```
 
+### 微信 · 4.1.13.12 · 只读窗口实测 2026-09-08
+
+> 用户已登录的微信在托盘（主窗最小化）。用 `restore` 放回原位、只读 shot / screen / uia / uiaread，再 `minimize` 还原；前台始终未变。**未输入、未发送、未重启。** 截图只留本机。
+
+```yaml
+显示名: 微信
+实测日期: 2026-09-08
+版本: 4.1.13.12                             # 核对 2026-09-08
+安装形态: Win32（新版 Weixin，Qt 5.15）+ WeChatAppEx（Chromium 小程序/网页运行时，独立目录 %APPDATA%\Tencent\xwechat\xplugin）
+exe: D:\ruanjian\wechat\Weixin\Weixin.exe   # 对外文档脱敏
+包标识/AUMID: 开始菜单 AppID 就是 exe 路径
+架构: x64
+进程:
+  主进程: Weixin.exe Medium + 若干 Weixin.exe 子进程 + crashpad_handler
+  运行时: WeChatAppEx.exe ×8（Medium / Low / 不可读），Chromium 信号 18 条，无 remote-debugging 参数
+窗口:
+  owner: Weixin
+  class: Qt51514QWindowIcon；title “微信”
+  主窗口识别: owner=Weixin + 该 class + 尺寸最大（还原后 1830x1127）；托盘态是 state=min
+  其它: WxTrayIconMessageWindow 1920x1117 hidden；WeChatAppEx 的 Chrome_WidgetWin_0 hidden
+  完整性: Medium
+
+L0:
+  CLI: 未测
+  URL protocol: weixin://、xweixin:// → Weixin.exe "%1"；未调用
+  本地端口: 主进程 14013/14016/14019/14022/14023，/json/version 无响应，不是 CDP
+  CDP: 无；WeChatAppEx 也无调试参数；未授权 --relaunch
+  COM: 无
+
+L1_UIA:
+  总体: 不可用——`uia`/`uiaread` 1–2 秒返回 0 个元素（Qt 5.15 没有暴露树，与 Qt6 剪映的挂死不同）
+  暗拒: 不要在空树上 uiaset
+
+L2_SendInput: 未测；闸预检 desktop=pass/UIPI=pass；本轮用户在场（idle=0s）
+
+L3_capture:
+  PrintWindow_后台: 1830x1127、颜色桶 230，完整
+  screen_合成: 5/5 被前台 Cursor 遮挡（restore 不激活，窗口在后面）
+  restore/minimize: 均 ok，前台未变
+
+验证:
+  本轮最强证据: PrintWindow 完整 + UIA 空 + 端口非 CDP
+
+安全:
+  风险类别: 高敏感私人通信
+  停手点: 发送、转发、删除、切换账号、任何输入框写入
+  敏感像素: 会话列表、聊天内容、联系人；截图不入库
+  布局: 观察后 minimize 回原状
+
+已知坑:
+  - 与 QQ 同为 IM、同为托盘态，但 L1 完全相反：QQ（Electron）UIA 可读，微信（Qt5）空树。没有 UIA、没有 CDP 的微信在 Windows 上只剩 L2，且每一步都要借前台。
+```
+
 ### Blender · 本机未安装 · 2026-09-08
 
 开始菜单、`Get-Command blender`、`C:\Program Files\Blender Foundation`、`D:\ruanjian` 均无安装。不编造 Windows 版 Python/`--background --python` 结论。用户自行安装并授权独立测试实例后，再按模板从 `probe.ps1` 重测。
 
-## 四·五、跨 app 的共性结论（2026-09-08，样本：计算器、记事本、WorkBuddy、Excel、WPS 表格、QQ、剪映）
+## 四·五、跨 app 的共性结论（2026-09-08，样本：计算器、记事本、WorkBuddy、Excel、WPS 表格、QQ、剪映、微信）
 
 每条至少两个不同实现复现；坐标、端口、HWND 一律不在此处。
 
-1. **起始状态多半是“没有可见窗口”。** QQ、WPS、剪映、WorkBuddy 都在托盘/最小化态运行，Excel 自动化实例默认隐藏。`windows` 默认列不到它们，`--all` 里是 `state=hidden|min`；此时截图整帧 1 桶、UIA 空树、`screen` 拒绝——这是窗口状态，不是 app 能力。先分清状态再下结论；最小化的用 `restore`（不激活），隐藏的交给用户。
+1. **起始状态多半是“没有可见窗口”。** QQ、微信、WPS、剪映、WorkBuddy 都在托盘/最小化态运行，Excel 自动化实例默认隐藏。`windows` 默认列不到它们，`--all` 里是 `state=hidden|min`；此时截图整帧 1 桶、UIA 空树、`screen` 拒绝——这是窗口状态，不是 app 能力。先分清状态再下结论；最小化的用 `restore`（不激活），隐藏的交给用户。
 2. **“再启动一次”不等于“显示已运行的窗口”。** QQ 会新起实例弹登录窗；剪映启动器转交后什么都不显示；Excel/WPS 的 COM 永远新起私有进程。`open` 对运行中的 app 只保证进程层的动作，窗口层必须回读 `windows`。
-3. **UIA 可用性不能按框架猜。** 同为 Electron：QQ 的 Chromium 树对 UIA 完整可读（Button/Edit/Document + 300 条文本），WorkBuddy 是空树。Qt：剪映 provider 直接挂死 6 秒，记事本（WinUI）Document 可写。WPS 自绘只露 55 个 Button，Excel 编辑栏可读而网格到不了。现场 `uia`/`uiaread` 各试一次，而且只能在隔离 worker 里试——剪映证明了为什么。
+3. **UIA 可用性不能按框架猜。** 同为 Electron：QQ 的 Chromium 树对 UIA 完整可读（Button/Edit/Document + 300 条文本），WorkBuddy 是空树。同为 Qt：微信（Qt5）秒回空树，剪映（Qt6）provider 挂死 6 秒。记事本（WinUI）Document 可写；WPS 自绘只露 55 个 Button；Excel 编辑栏可读而网格到不了。现场 `uia`/`uiaread` 各试一次，而且只能在隔离 worker 里试——剪映证明了为什么。
 4. **COM 是 Windows 的 AppleScript 字典，但要核对身份。** Excel 与 WPS 共用 ProgID（Excel.Application.12）、窗口类名（XLMAIN）甚至 Application.Name（“Microsoft Excel”）；32/64 位注册表视图决定谁应答。exe 路径是唯一可信身份；用 KET.Application 明确指 WPS。COM 对象不能穿过 PowerShell 函数返回，RCW 不释放会让进程挂到 DCOM 超时。
-5. **可见窗口的 PrintWindow 基本可靠；空帧几乎都是状态问题。** 七个可见窗口全部截到（46–404 桶）。复现的三种空帧：窗口隐藏（剪映、未显示的 Excel）、空白文档（记事本）、刚还原的首帧（QQ，已加一次 400ms 重试）。“app 拒绝后台渲染”本轮一次都没遇到——别把它当默认解释。
+5. **可见窗口的 PrintWindow 基本可靠；空帧几乎都是状态问题。** 八个可见窗口全部截到（46–404 桶）。复现的三种空帧：窗口隐藏（剪映、未显示的 Excel）、空白文档（记事本）、刚还原的首帧（QQ，已加一次 400ms 重试）。“app 拒绝后台渲染”本轮一次都没遇到——别把它当默认解释。
 6. **`screen` 拍到的常常是别的窗口。** 新出现的私有窗口（WPS、Excel 自动化）和 `restore` 回来的窗口（QQ）都排在前台 IDE 后面，5/5 采样被遮；剪映环境检测被 QQ 挡住。合成图只做交叉验证，不做内容证据。
-7. **本地端口 ≠ CDP。** WorkBuddy 多个端口 404，QQ 两个 HTTP 200，剪映 7264 无响应，WPS 云服务 4709——全都不是 CDP。只有 `/json/version` 返回 `webSocketDebuggerUrl` 且 owner 属于目标进程树才算。
+7. **本地端口 ≠ CDP。** WorkBuddy 多个端口 404，QQ 两个 HTTP 200，微信五个无响应，剪映 7264 无响应，WPS 云服务 4709——全都不是 CDP。只有 `/json/version` 返回 `webSocketDebuggerUrl` 且 owner 属于目标进程树才算。
 8. **状态指示器比像素可信。** WorkBuddy 发送键 disabled↔enabled、记事本“N 个字符”与标签“已修改”、Excel 编辑栏公式、计算器结果文本、WPS/Excel 另存文件里的缓存值——每个档案的“最强证据”都不是截图。
 
 ## 五、如何写“可用”

@@ -38,7 +38,13 @@ try {
     while (-not $line -and [DateTime]::UtcNow -lt $deadline) {
         Start-Sleep -Milliseconds 200
         $candidates = @(& $win windows 'smoke fixture' --all 2>$null)
-        $line = @($candidates | Where-Object { $_ -match '^id=0x' } | Select-Object -First 1)
+        # Title-only selection can accidentally reuse a stale/minimized fixture
+        # from another run. Bind readiness to the process started above and wait
+        # until its window is on the current desktop and not minimized.
+        $pidToken = " pid=$($fixtureProcess.Id) "
+        $line = @($candidates | Where-Object {
+            $_ -match '^id=0x' -and $_.Contains($pidToken) -and $_ -match ' state=current '
+        } | Select-Object -First 1)
         if (-not $line.Count) { $line = $null }
     }
     if (-not $line.Count -or $line[0] -notmatch 'id=(0x[0-9A-F]+)') { throw '测试窗口 12 秒内没有出现。' }
@@ -163,7 +169,28 @@ try {
         }
         Write-Output 'uiaread: action side-effect PASS'
     }
-    & $win hud 80 'win-use-master smoke'
+    $oldHud = $env:WIN_USE_MASTER_HUD
+    $oldHudStyle = $env:WIN_USE_MASTER_HUD_STYLE
+    $oldHudCapturable = $env:WIN_USE_MASTER_HUD_CAPTURABLE
+    try {
+        $env:WIN_USE_MASTER_HUD = $null
+        $env:WIN_USE_MASTER_HUD_STYLE = 'plain'
+        $env:WIN_USE_MASTER_HUD_CAPTURABLE = '1'
+        $hudOut = @(& $win hud 80 'win-use-master smoke')
+        if ($LASTEXITCODE -or (($hudOut -join ' ') -notmatch 'style=plain capturable=True')) {
+            throw "HUD 样式/可捕获开关失败：$($hudOut -join ' ')"
+        }
+        $env:WIN_USE_MASTER_HUD = '0'
+        $disabledHud = @(& $win hud 80 'disabled smoke' glow)
+        if ($LASTEXITCODE -or (($disabledHud -join ' ') -notmatch 'HUD disabled')) {
+            throw "HUD 关闭开关失败：$($disabledHud -join ' ')"
+        }
+        Write-Output 'hud-config: style/capturable/disable PASS'
+    } finally {
+        $env:WIN_USE_MASTER_HUD = $oldHud
+        $env:WIN_USE_MASTER_HUD_STYLE = $oldHudStyle
+        $env:WIN_USE_MASTER_HUD_CAPTURABLE = $oldHudCapturable
+    }
 
     if (-not (Test-Path -LiteralPath ($shot + '.receipt.json'))) { throw 'shot receipt 未生成。' }
     if (-not (Test-Path -LiteralPath ($see + '.uia.json'))) { throw 'see UIA map 未生成。' }

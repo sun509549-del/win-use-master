@@ -7,6 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Agent Skills](https://img.shields.io/badge/Agent%20Skills-Standard-green)](https://agentskills.io)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D4)](#前置条件)
+[![Windows CI](https://github.com/sun509549-del/win-use-master/actions/workflows/ci.yml/badge.svg)](https://github.com/sun509549-del/win-use-master/actions/workflows/ci.yml)
 
 **让 coding agent 操控没有 API 的 Windows 桌面 app，并把关键步骤留成可复现的取证。**
 
@@ -180,6 +181,8 @@ Windows `SendInput` 是全局输入流，不携带目标 PID/HWND。工具会短
 - **遮挡**：落点最上层不是目标窗口就拒绝。
 - **HUD**：借前台时给用户可见提示，鼠标穿透；排除截图是 best effort，证据仍需抽查。
 
+HUD 默认使用四角 `corner` 样式并尽力排除捕获。可用 `WIN_USE_MASTER_HUD_STYLE=corner|glow|plain` 选择四角、整屏边框或仅标签；`WIN_USE_MASTER_HUD=0` 完全关闭。只有录制 HUD 本身的演示时才设置 `WIN_USE_MASTER_HUD_CAPTURABLE=1`，否则保持默认排除捕获。手动预览也可执行 `win.ps1 hud 1400 "文案" glow`。
+
 `--force` 不是通用“继续”按钮。它不绕过用户在场、遮挡、完整性未知/UIPI、锁屏、UAC、不可逆或外部动作；当前仅用于用户已明确批准某条具体终端/IDE 命令后，解除其 `Enter` 防误触保护。它不代表授权本身。
 
 ## 命令表
@@ -265,7 +268,7 @@ node "$SKILL_DIR/scripts/cdp.js" <port> shot|eval ...
 - 不自动提权、不关闭 UAC/Defender/SmartScreen、不注入进程、不强杀 app。
 - CDP 调试端口暴露的是强能力；只绑定本机、只针对用户授权的 app，用完关闭实例。
 
-详细原理见 [`references/控制面详解.md`](references/控制面详解.md)，故障与权限见 [`references/权限与故障.md`](references/权限与故障.md)，证据落盘见 [`references/取证规范.md`](references/取证规范.md)，单 app 易腐经验见 [`references/app档案.md`](references/app档案.md)，与原 Mac 版的差距和优先级见 [`references/与mac版差距.md`](references/与mac版差距.md)。
+维护交接见 [`HANDOFF.md`](HANDOFF.md)。详细原理见 [`references/控制面详解.md`](references/控制面详解.md)，故障与权限见 [`references/权限与故障.md`](references/权限与故障.md)，证据落盘见 [`references/取证规范.md`](references/取证规范.md)，单 app 易腐经验见 [`references/app档案.md`](references/app档案.md)，与原 Mac 版的差距和优先级见 [`references/与mac版差距.md`](references/与mac版差距.md)。
 
 ## 仓库结构
 
@@ -273,6 +276,7 @@ node "$SKILL_DIR/scripts/cdp.js" <port> shot|eval ...
 win-use-master/
 ├── SKILL.md
 ├── README.md
+├── HANDOFF.md            # 维护交接、测试矩阵、发布流程与当前待办
 ├── cdp.js                # 兼容旧入口，转发到 scripts/cdp.js
 ├── scripts/
 │   ├── HuWin.cs          # Win32 / DWM / SendInput / 截图 / 安全判据

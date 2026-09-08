@@ -34,6 +34,21 @@ function Write-HuWarning([string] $Message) {
     [Console]::Error.WriteLine($Message)
 }
 
+function Show-HuHud([int] $Milliseconds, [string] $Text, [string] $Style = '') {
+    $enabled = [Environment]::GetEnvironmentVariable('WIN_USE_MASTER_HUD') -ne '0'
+    $resolvedStyle = if ($Style) { $Style } else { [Environment]::GetEnvironmentVariable('WIN_USE_MASTER_HUD_STYLE') }
+    if (-not $resolvedStyle) { $resolvedStyle = 'corner' }
+    $resolvedStyle = $resolvedStyle.ToLowerInvariant()
+    if ($resolvedStyle -notin @('corner','glow','plain')) {
+        Write-HuWarning "HUD 样式 '$resolvedStyle' 无效，改用 corner（可选 corner/glow/plain）。"
+        $resolvedStyle = 'corner'
+    }
+    $captureSetting = [Environment]::GetEnvironmentVariable('WIN_USE_MASTER_HUD_CAPTURABLE')
+    $capturable = $captureSetting -match '^(1|true|yes)$'
+    if ($enabled) { [HuWin]::ShowHud($Milliseconds, $Text, $resolvedStyle, $capturable) }
+    return [pscustomobject]@{ Shown = $enabled; Style = $resolvedStyle; Capturable = $capturable }
+}
+
 function Get-AbsolutePath([string] $Path) {
     if ([IO.Path]::IsPathRooted($Path)) { return [IO.Path]::GetFullPath($Path) }
     return [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $Path))
@@ -619,7 +634,7 @@ function Invoke-WithBorrowedFocus($Window, [scriptblock] $Action, [switch] $Keep
         [HuWin]::GetCursorPos([ref]$cursor) | Out-Null
         $borrowed = -not (Test-TargetForeground $Window)
         if (-not $HudText) { $HudText = "$script:ToolName 正在操作「$($Window.Owner)」" }
-        try { [HuWin]::ShowHud(1200, $HudText) } catch { }
+        try { [void](Show-HuHud 1200 $HudText) } catch { }
         if ($borrowed) { $focusClock.Start() }
         if (-not [HuWin]::ActivateWindow([long]$Window.Hwnd)) { Stop-Hu "refused: Windows 不允许把目标窗口切到前台。请手动点一下目标窗口后重试。" 2 }
         $deadline = [DateTime]::UtcNow.AddSeconds(2)
@@ -704,7 +719,7 @@ win-use-master — Windows 原生 app 的分层操控与可复现取证
 
 应用与状态:
   win.ps1 open <显示名|进程名|exe路径> [--cdp port] [--relaunch] [--dry]
-  win.ps1 hud [毫秒] [文案]
+  win.ps1 hud [毫秒] [文案] [corner|glow|plain]
   probe.ps1 <显示名|进程名|exe路径>
   node cdp.js <port> list|snapshot|find|wait|mouse|insert|press|shot|eval|act
 
@@ -1154,8 +1169,11 @@ switch ($Command.ToLowerInvariant()) {
     'hud' {
         $ms = if ($CommandArgs.Count -and $CommandArgs[0] -match '^\d+$') { [int]$CommandArgs[0] } else { 1400 }
         $text = if ($CommandArgs.Count -gt 1) { $CommandArgs[1] } else { "$script:ToolName 正在接管屏幕" }
-        [HuWin]::ShowHud($ms,$text)
-        Write-Output "HUD displayed ${ms}ms"
+        $style = if ($CommandArgs.Count -gt 2) { $CommandArgs[2] } else { '' }
+        $hud = Show-HuHud $ms $text $style
+        if ($hud.Shown) {
+            Write-Output "HUD displayed ${ms}ms style=$($hud.Style) capturable=$($hud.Capturable)"
+        } else { Write-Output 'HUD disabled by WIN_USE_MASTER_HUD=0' }
         break
     }
 

@@ -211,7 +211,7 @@ node "$SKILL_DIR/scripts/cdp.js" <port> act <target> <script-file|inline|-> [--r
 
 工具会记录自身刚发出的 `SendInput` 尾迹，并在短时间内从“用户在场”计时里排除；只排除时间戳与本工具记录完全吻合的事件，后续任何真实用户输入都会立即重新触发等待。动作边界：单次 type/op 最多 1000 个 UTF-16 字符、scroll 最多 200 步、hover 最多 8 秒，超限必须在发送输入前拒绝。
 
-HUD 鼠标穿透、不会主动成为前台，并尝试从常见捕获中排除；排除是 best effort，每批证据抽查是否入镜。
+HUD 鼠标穿透、不会主动成为前台，并尝试从常见捕获中排除；排除是 best effort，每批证据抽查是否入镜。默认 `corner`；`WIN_USE_MASTER_HUD_STYLE=corner|glow|plain` 选样式，`WIN_USE_MASTER_HUD=0` 关闭。仅在用户明确要录 HUD 演示时设 `WIN_USE_MASTER_HUD_CAPTURABLE=1`，普通取证不得开启。
 
 ## 六、🔴 停手线
 

@@ -1318,6 +1318,8 @@ public class HuWin
     {
         public int X, Y, Width, Height, Duration;
         public string Text;
+        public string Style;
+        public bool Capturable;
         public Stopwatch Clock;
         public List<ScreenInfo> Screens;
     }
@@ -1325,6 +1327,11 @@ public class HuWin
     // Starts a background message-loop thread and returns immediately. The window is
     // topmost, ToolWindow, NoActivate, layered and HTTRANSPARENT/WS_EX_TRANSPARENT.
     public static void ShowHud(int milliseconds, string text)
+    {
+        ShowHud(milliseconds, text, "corner", false);
+    }
+
+    public static void ShowHud(int milliseconds, string text, string style, bool capturable)
     {
         if (milliseconds <= 0) return;
         var state = new HudState();
@@ -1335,6 +1342,9 @@ public class HuWin
         state.Height = virtualScreen.H;
         state.Duration = Math.Min(milliseconds, 600000);
         state.Text = SanitizeHudText(text);
+        string normalizedStyle = String.IsNullOrEmpty(style) ? "corner" : style.Trim().ToLowerInvariant();
+        state.Style = normalizedStyle == "glow" || normalizedStyle == "plain" ? normalizedStyle : "corner";
+        state.Capturable = capturable;
         state.Screens = AllScreens();
         state.Clock = new Stopwatch();
 
@@ -1393,7 +1403,7 @@ public class HuWin
             lock (HudSync) HudStates[hwnd] = state;
             state.Clock.Start();
             SetLayeredWindowAttributes(hwnd, HUD_COLOR_KEY, 235, HUD_LWA_COLORKEY | HUD_LWA_ALPHA);
-            if (SupportsExcludeFromCapture()) SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+            if (!state.Capturable && SupportsExcludeFromCapture()) SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             SetWindowPos(hwnd, new IntPtr(-1), state.X, state.Y, state.Width, state.Height,
                 0x0010 | 0x0040); // SWP_NOACTIVATE | SWP_SHOWWINDOW
@@ -1472,19 +1482,32 @@ public class HuWin
         {
             graphics.Clear(HudTransparentColor);
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var glow = new Pen(Color.FromArgb(255, 235, 118, 46), 6.0f))
-            using (var core = new Pen(Color.FromArgb(255, 255, 190, 80), 2.0f))
+            if (state.Style != "plain")
             {
-                glow.StartCap = glow.EndCap = LineCap.Round;
-                core.StartCap = core.EndCap = LineCap.Round;
-                foreach (ScreenInfo screen in state.Screens)
+                using (var glow = new Pen(Color.FromArgb(255, 235, 118, 46), state.Style == "glow" ? 9.0f : 6.0f))
+                using (var core = new Pen(Color.FromArgb(255, 255, 190, 80), 2.0f))
                 {
-                    int left = screen.L - state.X + 20;
-                    int top = screen.T - state.Y + 20;
-                    int right = screen.R - state.X - 21;
-                    int bottom = screen.B - state.Y - 21;
-                    DrawHudCorners(graphics, glow, left, top, right, bottom, 58);
-                    DrawHudCorners(graphics, core, left, top, right, bottom, 58);
+                    glow.StartCap = glow.EndCap = LineCap.Round;
+                    core.StartCap = core.EndCap = LineCap.Round;
+                    foreach (ScreenInfo screen in state.Screens)
+                    {
+                        int left = screen.L - state.X + 20;
+                        int top = screen.T - state.Y + 20;
+                        int right = screen.R - state.X - 21;
+                        int bottom = screen.B - state.Y - 21;
+                        if (state.Style == "glow")
+                        {
+                            int width = Math.Max(1, right - left);
+                            int height = Math.Max(1, bottom - top);
+                            graphics.DrawRectangle(glow, left, top, width, height);
+                            graphics.DrawRectangle(core, left, top, width, height);
+                        }
+                        else
+                        {
+                            DrawHudCorners(graphics, glow, left, top, right, bottom, 58);
+                            DrawHudCorners(graphics, core, left, top, right, bottom, 58);
+                        }
+                    }
                 }
             }
 

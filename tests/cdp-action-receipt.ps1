@@ -36,13 +36,20 @@ try {
         '--remote-allow-origins=*', 'about:blank'
     )
     $edge = Start-Process -FilePath $edgeExe -ArgumentList $edgeArgs -WindowStyle Hidden -PassThru
-    $deadline = [DateTime]::UtcNow.AddSeconds(12)
+    # A cold GitHub runner creates the profile and warms Edge on first launch;
+    # 12 s was observed to be too tight there. The loop exits as soon as CDP answers.
+    $readyClock = [Diagnostics.Stopwatch]::StartNew()
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
         try { $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 1 } catch { $targets = $null }
         if ($targets) { break }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    if (-not $targets) { throw '临时 Edge CDP 实例没有就绪。' }
+    if (-not $targets) {
+        $edgeState = if ($edge.HasExited) { "Edge 已退出 exit=$($edge.ExitCode)" } else { 'Edge 仍在运行但 /json/list 无响应' }
+        throw "临时 Edge CDP 实例 $([int]$readyClock.Elapsed.TotalSeconds)s 内没有就绪（$edgeState，port=$port）。"
+    }
+    Write-Output "edge-ready: $([Math]::Round($readyClock.Elapsed.TotalSeconds,1))s port=$port"
 
     $setupJs = "document.body.innerHTML='<input id=i value=abc><button id=b onclick=`"this.disabled=true`">Go</button><button id=b2 onclick=`"this.remove()`">Gone</button>'; 'ready'"
     $setup = @(& $node $cdp $port eval auto $setupJs 2>&1)
@@ -105,7 +112,9 @@ try {
         $env:HUASHU_CDP_TEST_HANG = $oldHang
     }
     $timeoutReceipt = Get-Content -LiteralPath $receipts.Timeout -Raw | ConvertFrom-Json
-    if ($timeoutExit -ne 2 -or $clock.Elapsed.TotalSeconds -lt 5.5 -or $clock.Elapsed.TotalSeconds -gt 9 -or
+    # 6 s request deadline plus Node start-up, target listing and connect. Without
+    # the deadline the hang would never return, so 12 s still proves it is bounded.
+    if ($timeoutExit -ne 2 -or $clock.Elapsed.TotalSeconds -lt 5.5 -or $clock.Elapsed.TotalSeconds -gt 12 -or
         $timeoutReceipt.result.status -ne 'error' -or $timeoutReceipt.result.timedOut -ne $true -or
         $timeoutReceipt.result.errorType -ne 'CdpTimeoutError' -or $timeoutReceipt.verification.effect -ne 'unknown') {
         throw "CDP request 超时约定失败：exit=$timeoutExit elapsed=$([Math]::Round($clock.Elapsed.TotalSeconds,2))s status=$($timeoutReceipt.result.status) type=$($timeoutReceipt.result.errorType) effect=$($timeoutReceipt.verification.effect) output=$($timeoutOut -join ' | ')"

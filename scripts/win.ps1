@@ -364,6 +364,13 @@ function Invoke-BackgroundShot($Window, [string] $Path, [switch] $NoReceipt, [sw
     $recoveredFrom = $null
     $method = 'PrintWindow(PW_RENDERFULLCONTENT)'
     $size = [HuWin]::ShotWindowTimed([long]$Window.Hwnd, $full, $script:CaptureTimeoutMilliseconds)
+    if ($null -eq $size -and -not $Window.Iconic -and [HuWin]::IsWindow([IntPtr][long]$Window.Hwnd)) {
+        # A window that was just restored or is mid-animation can reject the first
+        # PrintWindow outright (Electron/QQ observed). One bounded retry, not a loop.
+        Start-Sleep -Milliseconds 400
+        $size = [HuWin]::ShotWindowTimed([long]$Window.Hwnd, $full, $script:CaptureTimeoutMilliseconds)
+        if ($null -ne $size) { $method = 'PrintWindow(PW_RENDERFULLCONTENT) retry-after-400ms' }
+    }
     $colors = if ($null -ne $size -and (Test-Path -LiteralPath $full)) { [HuWin]::ColorCount($full, 160) } else { -1 }
 
     # Some Chromium/CEF shells expose one blank owner window and a same-geometry
@@ -891,6 +898,7 @@ win-use-master — Windows 原生 app 的分层操控与可复现取证
   win.ps1 uia <hwnd|pid|owner>
   win.ps1 uiaread <hwnd|pid|owner> [名称或 AutomationId 过滤]
   win.ps1 idle | frontmost
+  win.ps1 restore | minimize <hwnd|pid|owner>   # 用户要求时还原/最小化窗口，不激活；隐藏窗口拒绝
 
 语义写入（通常不抢焦点）:
   win.ps1 uiaset <target> <eN|first> <text> [@uia.json]
@@ -1409,6 +1417,28 @@ switch ($Command.ToLowerInvariant()) {
     'frontmost' {
         $fg = [HuWin]::ForegroundWindow().ToInt64(); $front = @((Get-HuWindows) | Where-Object { $_.Hwnd -eq $fg })
         if ($front.Count) { Write-Output (Format-Window $front[0]) } else { Write-Output (Format-Hwnd $fg) }
+        break
+    }
+
+    # Explicit window-state changes the user asked for. They never activate, never
+    # touch hidden/cloaked windows, and report the state before and after so the
+    # agent can put the window back the way it found it.
+    { $_ -in @('restore', 'minimize') } {
+        if (-not $CommandArgs.Count) { Stop-Hu "用法: win.ps1 $Command <hwnd|pid|owner>（只对最小化/可见窗口，不激活）" }
+        $w = Resolve-HuWindow $CommandArgs[0]
+        if ($w.Cloaked) { Stop-Hu "refused: 目标窗口 $(Format-Hwnd $w.Hwnd) 在其它虚拟桌面或被 DWM cloaked。" 2 }
+        if (-not $w.Visible) { Stop-Hu "refused: 目标窗口 $(Format-Hwnd $w.Hwnd) 是隐藏窗口（托盘态/未显示）；显示它是 app 自己的决定，请用户打开。" 2 }
+        $wanted = ($Command -eq 'minimize')
+        if ($script:Dry) { Write-Output "dry: $Command $(Format-Hwnd $w.Hwnd) currently=$(if ($w.Iconic) { 'min' } else { 'current' }) -> $(if ($wanted) { 'min' } else { 'current' })（SW_SHOW*NOACTIVE，不激活）"; break }
+        $before = Format-Window $w
+        $ok = if ($wanted) { [HuWin]::MinimizeNoActivate([long]$w.Hwnd) } else { [HuWin]::RestoreNoActivate([long]$w.Hwnd) }
+        Start-Sleep -Milliseconds 150
+        $after = @((Get-HuWindows) | Where-Object { $_.Hwnd -eq $w.Hwnd })
+        if (-not $ok -or -not $after.Count) { Stop-Hu "$Command 未生效：窗口拒绝了状态改变或已消失。before: $before" 1 }
+        Write-Output "$Command ok（未激活，前台未变）"
+        Write-Output "before: $before"
+        Write-Output "after:  $(Format-Window $after[0])"
+        if (-not $wanted) { Write-Output "提示: 看完记得 win.ps1 minimize $(Format-Hwnd $w.Hwnd) 还原用户布局；刚还原的窗口首帧 PrintWindow 可能需要一两秒。" }
         break
     }
 

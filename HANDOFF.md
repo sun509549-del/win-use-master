@@ -22,7 +22,7 @@
 - PowerShell 7 + Node.js 24 是当前开发/CI 基线；Node.js 22+ 属支持范围。
 - `scripts/HuWin.dll` 是生成物，不提交；`win.ps1` 会在缺失或源码更新时重编译。
 - 收据 schema 已统一为 `win-use-master/receipt-v1`、`win-use-master/uia-map-v1`、`win-use-master/action-receipt-v1`。
-- 完整可重放档案有三个：计算器 11.x（UWP 宿主 + InvokePattern）、记事本 11.x（打包桌面 app + Document ValuePattern 可逆写）、WorkBuddy AI 5.4.2（Electron + Slate，CDP 零焦点 insert/撤回，发送键作状态指示器；需用户先以 `--cdp` 启动授权实例）。剪映 10.4.0 两轮观察：启动器只拉起「环境检测」；编辑器进程起来后全部窗口隐藏，截图/UIA 皆空。Blender 未安装。证据图、快照原文不入库。
+- 完整可重放档案有五个：计算器 11.x（UWP 宿主 + InvokePattern）、记事本 11.x（Document ValuePattern 可逆写）、WorkBuddy AI 5.4.2（CDP 零焦点 insert/撤回；需用户先以 `--cdp` 启动授权实例）、Excel 16.x（L0 COM 私有实例写表→另存→不经 Excel 验证）、WPS 表格 12.x（KET.Application 私有实例，同任务 + 第二实例重开读回）。只读档案：QQ 9.9（Electron，UIA 树可读、PrintWindow 完整、无 CDP）、剪映 10.4（可见态 PrintWindow 完整、UIA provider 挂死被 worker 终止）。`app档案.md` 已有跨 app 共性结论一节。Blender 未安装。证据图、快照原文不入库。
 
 ## 3. 代码地图
 
@@ -78,6 +78,9 @@
 - UIA 动作元素包含 Document；`first` 先 Edit，无 Edit 时兜底带 ValuePattern 的 Document。Chromium 页面 Document 会被列出，但 SetValue 会因无 ValuePattern 被拒。
 - `screen` 才是桌面合成；`--window` 必须在当前桌面、可见且未最小化。裁剪后的图不得当作 `@` 坐标参考。
 - `windows --all` 对不可见窗口输出 `state=hidden`；`shot` 对它们直说“不可见，空帧是预期”，`shotfg` 直接退出 2，不借前台。
+- `restore`/`minimize` 是用户明确要求时才用的窗口状态命令：`SW_SHOWNOACTIVATE`/`SW_SHOWMINNOACTIVE` 不改前台；只对可见（含最小化）窗口生效，隐藏窗口拒绝；打印 before/after，看完要 `minimize` 还原用户布局。
+- `PrintWindow` 首次直接失败（非空帧）时只重试一次（400 ms）；刚 `restore` 的窗口首帧会这样。不是循环重试。
+- L0 COM：`New-Object -ComObject` 总是新起私有进程；只对新 pid 写/存/Quit，预存在的进程一律不 Quit；COM 对象不经 PowerShell 函数返回；全部 RCW 释放后再 Quit；用 Hwnd→pid→exe 核对身份（WPS 抢注了 Excel 的 ProgID/类名/Name）。
 - `open --background` 不得假装一定不抢前台；必须回读。禁止用 `PostMessage` 或注入去做“后台启动”。
 - `scrollin --horizontal` 与纵向共用 200 步上限。
 - 像素或 DOM 变化最多证明 `partial`，最终判据优先级是：业务副作用 > 状态指示器 > 控件读回 > 可见文字 > API 返回。
@@ -124,6 +127,9 @@ pwsh -NoProfile -File tests/calculator-profile.ps1
 pwsh -NoProfile -File tests/notepad-profile.ps1
 # 需用户先：pwsh -NoProfile -File scripts/win.ps1 open "<path>\WorkBuddyAI.exe" --cdp 9333 --background
 pwsh -NoProfile -File tests/workbuddy-cdp-profile.ps1 -Port 9333
+# L0 COM，各自新起私有实例，不碰用户已打开的 Excel/WPS；WPS 未安装时第二个会失败
+pwsh -NoProfile -File tests/excel-com-profile.ps1
+pwsh -NoProfile -File tests/wps-et-com-profile.ps1
 ```
 
 前两者发现目标原本已打开时会拒绝运行；不要关闭用户已有实例。计算器测试执行 `1+2=3`、恢复 0 并关闭。记事本测试还会拒绝向恢复出的会话写入（多标签、已修改或非空文档），写入后清空再关闭；记事本 11 关闭已修改标签不弹提示而是留到下次会话，因此失败路径同样先清空。WorkBuddy 测试相反：它从不启动、重启或关闭 app，只接受用户已授权并带 `--cdp` 启动的实例；无实例、端口归属不明或输入区有草稿时退出 2。它不按 Enter、不点发送、不碰「重启升级」。
@@ -143,9 +149,9 @@ pwsh -NoProfile -File tests/workbuddy-cdp-profile.ps1 -Port 9333
 
 ## 8. 当前待办
 
-1. P1：再补一个非 Store 的 Win32/WPF app 只读 + 可逆写档案（记事本 11 已覆盖打包桌面 app + Document 路径，但它仍是 Store 分发）。
-2. P1：剪映编辑器可见态的 PrintWindow/UIA，以及 CEF 是否接受 `--remote-debugging-port`；都需要用户显示窗口或授权重启，不得自行 ShowWindow。
-3. P1：制作经脱敏的真实 Windows 案例和架构图。
+1. P1：剪映 CEF 是否接受 `--remote-debugging-port`、「版本更新」弹窗可见态截图；都需要用户授权重启或显示，不得自行 ShowWindow。
+2. P1：QQ 聊天输入框的 UIA/CDP 写路径未测（停手线附近，需用户指定一个可逆目标）。
+3. P1：制作经脱敏的真实 Windows 案例和架构图；起稿 `踩坑实录.md`（今天已有足够可复现素材）。
 4. P2：把本项目特有、可复现且不能编码消除的失败过程整理进 `踩坑实录.md`；不要复制 Mac 结论凑文档。
 
 ## 9. 常见误判
@@ -158,5 +164,8 @@ pwsh -NoProfile -File tests/workbuddy-cdp-profile.ps1 -Port 9333
 - `see --out` 在 `pwsh -File` 下会在参数绑定阶段失败（二义的 `-Out*` 前缀）；文档和脚本都用位置参数路径。
 - `windows --all` 列出的窗口可能是 `state=hidden`：截图空帧、UIA 空树、`screen` 拒绝都只是“窗口没显示”，不是该 app 的能力结论。
 - CDP `list` 打印的 target URL 可能带账号类 query（收据已去掉）；不要把 `list`/`snapshot` 原文贴进档案。
+- `open` 对运行中的 app 不等于“显示它的窗口”：QQ 会新起实例弹登录窗，剪映启动器转交后什么都不显示。窗口层永远回读 `windows`。
+- “Microsoft Excel”/`XLMAIN`/`Excel.Application.12` 在装了 WPS 的机器上可能都是 WPS；只有 exe 路径可信。
+- UIA 可用性不能按框架猜：Electron 的 QQ 可读、WorkBuddy 空树；Qt 的剪映会挂死 provider（隔离 worker 6 秒终止是唯一保护）。
 - HWND、端口、UIA/CDP ref、坐标和界面文案都是易腐信息，不得写成通用常量。
 

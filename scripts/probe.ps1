@@ -678,7 +678,12 @@ function Get-RemoteDebugFacts([object[]] $Processes, [int[]] $RelevantPids) {
 function Test-TargetReference([string] $Command, [string] $ExePath, [string] $InstallRoot, [string] $ExeName) {
     if (-not $Command) { return $false }
     if ($ExePath -and $Command.IndexOf($ExePath, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
-    if ((Test-SpecificInstallRoot $InstallRoot) -and $Command.IndexOf($InstallRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    # Match the install root as a directory (trailing separator). A bare prefix
+    # made D:\apps\qq claim D:\apps\qqmusic\...\QQMusicSvr.exe as its COM server.
+    if (Test-SpecificInstallRoot $InstallRoot) {
+        $rootPrefix = $InstallRoot.TrimEnd('\') + '\'
+        if ($Command.IndexOf($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
     if ($ExeName -and $ExeName -notmatch '^(?i)(update|launcher|applicationframehost|explorer)\.exe$') {
         if ($Command -match ('(?i)(?:^|[\\/"\s])' + [regex]::Escape($ExeName) + '(?:"|\s|$)')) { return $true }
     }

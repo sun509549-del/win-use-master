@@ -29,13 +29,16 @@
 | CDP 零焦点可逆写与撤回 | `insert` + `press SelectAll`/`Backspace` 真实键事件；WorkBuddy 上以发送键 disabled 状态为指示器全链路回归 |
 | 编辑器正文不进日志 | 采集时打 `editable` 标记，`role=textbox` 的 Slate/ProseMirror 差分只显示字符数；无头 Edge 回归守住 |
 | 隐藏窗口不误判 | `windows --all` 标 `state=hidden`；`shot` 直说不可见、`screen`/L2/`shotfg` 拒绝 |
+| 用户要求时还原/最小化窗口 | `restore`/`minimize`：`SW_SHOW*NOACTIVE` 不改前台，隐藏窗口拒绝，打印前后状态（Mac 靠 `mac open` 激活） |
+| COM 作为 L0 的真实写路径 | Excel/WPS 两个私有实例档案：身份核对、Visible 时机、RCW 释放、不经宿主验证文件 |
 | app 经验回流与版本自检 | `app档案.md`、30 天静默版本检查 |
 
 ## 仍缺少或样本不足
 
 | 优先级 | 差距 | 当前状态 / 完成标准 |
 |---|---|---|
-| P1 | 真实 app 档案广度 | 完整可重放档案三个：计算器 11.x（Invoke）、记事本 11.x（Document ValuePattern 可逆写 + 两种状态指示器）、WorkBuddy AI 5.4.2（用户授权的 CDP 实例上 insert→发送键启用→SelectAll+Backspace 撤回，零焦点）。Excel 只有只读 COM。剪映两轮：启动器只拉起「环境检测」；编辑器进程起后窗口全部隐藏，截图/UIA 皆空，CDP 未测。Blender 未装。仍缺非 Store 的 Win32/WPF 样本和第二个 Chromium 实现。 |
+| P1 | 真实 app 档案广度 | 完整可重放档案五个：计算器（Invoke）、记事本（Document ValuePattern）、WorkBuddy（CDP 零焦点写/撤回）、Excel（COM 私有实例写表另存并不经 Excel 验证）、WPS 表格（KET.Application 同任务 + 二次打开）。只读档案：QQ（UIA 可读、PrintWindow 完整、无 CDP）、剪映（可见态截图完整、UIA 挂死）。Mac 有 11 个 app；Windows 7 个，且 Blender、微信、系统设置类样本仍缺。 |
+| P1 | 跨 app 共性结论 | 已有 8 条（`app档案.md` 四·五节），每条 ≥2 个实现复现；比 Mac 的 9 条少一轮验证周期。 |
 | P1 | 面向用户的真实案例与视觉素材不足 | Mac 版有 Blender/桌面客户端案例、GIF 和架构图；Windows 版目前重工程验证、轻展示。需要经脱敏的 Windows 原生/UIA/CDP 案例与架构图，但不能拿测试 fixture 冒充生产案例。 |
 | P1 | 单 app 经验的广度不足 | Mac 档案覆盖多个 Electron 和原生 app；Windows 需要随真实任务渐进积累，不能凭框架名称推断 UIA/CDP/截图一定可用。 |
 | P2 | 翻车过程文档尚未独立沉淀 | 原理、故障、证据、app 档案已拆分，但没有对应 `踩坑实录.md`。只有出现可复现且不能编码消除的教训时再补，避免复制 Mac 结论。 |
@@ -48,6 +51,6 @@ Mac 版可以先尝试向指定 PID 投递合成事件，失败后再借焦点�
 
 ## 下一步顺序
 
-1. 再补一个非 Store 分发的 Win32/WPF app 只读 + 可逆写回归（记事本 11 已覆盖打包桌面 app）。
-2. 剪映可见态与 CEF `--remote-debugging-port`（需用户显示窗口或授权重启）作为第二个 Chromium 实现。
-3. 最后处理案例素材。
+1. 剪映 CEF `--remote-debugging-port` 与更新弹窗（需用户授权重启/显示）作为第二个 Chromium 实现。
+2. 微信、系统设置、Blender 等补样本；QQ 输入框写路径需用户指定可逆目标。
+3. 案例素材与 `踩坑实录.md`。

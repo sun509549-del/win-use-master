@@ -97,8 +97,14 @@ try {
         $imageY = ([double]$editSpec[0].cy / [double]$receiptData.imageToWindowScale.y).ToString('0.###', [Globalization.CultureInfo]::InvariantCulture)
         $coordinateShot = Join-Path $evidence 'coordinate-after.png'
         $opOutput = @(& $win op $hwnd $imageX $imageY 'coordinate-smoke' "@$see" --replace shot $coordinateShot)
-        $opOutput | Write-Output
         $opExit = $LASTEXITCODE
+        # Sample the presence trail immediately: the raw idle clock must still be
+        # within the trail window (10 s) while the effective idle already excludes
+        # our own SendInput. Doing this after the UIA read-back made it depend on
+        # machine load.
+        $rawAfter = [HuWin]::IdleSeconds()
+        $userAfter = [HuWin]::UserIdleSeconds()
+        $opOutput | Write-Output
         if ($opExit) {
             if ($RequireCoordinate -or $opExit -ne 2) { throw "op exit=$opExit" }
             $coordinateState = 'SKIP(safety-refusal)'
@@ -106,6 +112,10 @@ try {
             if (($opOutput -join "`n") -notmatch 'op finished；(?:借焦点 [0-9.]+s 后已还原|目标本就在前台，未切换焦点)') {
                 throw 'op 没有给出可审计的真实焦点占用结果。'
             }
+            if ($rawAfter -ge 8 -or $userAfter -lt 2) {
+                throw "自身输入尾迹没有被安全排除：raw=$rawAfter user=$userAfter"
+            }
+            Write-Output ("presence-trail: PASS raw={0:F2}s effective={1:F0}s" -f $rawAfter,$userAfter)
             $opReceipt = Get-Content -LiteralPath ($coordinateShot + '.receipt.json') -Raw | ConvertFrom-Json
             if ($opReceipt.action.kind -ne 'op' -or $opReceipt.action.layer -ne 'L2' -or
                 -not $opReceipt.verification.before.sha256 -or -not $opReceipt.verification.effect -or
@@ -122,12 +132,6 @@ try {
             if ($LASTEXITCODE -or (($coordinateReadback -join "`n") -notmatch 'value="coordinate-smoke"')) {
                 throw 'op 完成后 UIA 没有读回 coordinate-smoke。'
             }
-            $rawAfter = [HuWin]::IdleSeconds()
-            $userAfter = [HuWin]::UserIdleSeconds()
-            if ($rawAfter -ge 3 -or $userAfter -lt 2) {
-                throw "自身输入尾迹没有被安全排除：raw=$rawAfter user=$userAfter"
-            }
-            Write-Output ("presence-trail: PASS raw={0:F2}s effective={1:F0}s" -f $rawAfter,$userAfter)
             $coordinateState = 'PASS'
         }
     } else {
@@ -224,6 +228,20 @@ try {
     }
     Write-Output 'screen: window/region/mutex PASS'
 
+    # Explicit window-state commands: minimize then restore the fixture without
+    # activating it; the foreground must be unchanged and shot must work again.
+    $fgBefore = [HuWin]::ForegroundWindow().ToInt64()
+    $minOut = @(& $win minimize $hwnd)
+    if ($LASTEXITCODE -or (($minOut -join "`n") -notmatch 'after:  id=.* state=min ')) { throw "minimize 失败：$($minOut -join ' ')" }
+    $minShot = @(& $hostExe -NoProfile -File $win shot $hwnd (Join-Path $evidence 'minimized.png') 2>&1)
+    if ($LASTEXITCODE -ne 2) { throw "最小化窗口的 shot 应退出 2，得到 $LASTEXITCODE：$($minShot -join ' ')" }
+    $restoreOut = @(& $win restore $hwnd)
+    if ($LASTEXITCODE -or (($restoreOut -join "`n") -notmatch 'after:  id=.* state=current ')) { throw "restore 失败：$($restoreOut -join ' ')" }
+    if ([HuWin]::ForegroundWindow().ToInt64() -ne $fgBefore) { throw 'restore/minimize 改变了前台窗口。' }
+    & $win shot $hwnd (Join-Path $evidence 'restored.png') | Out-Null
+    if ($LASTEXITCODE) { throw "restore 后 shot exit=$LASTEXITCODE" }
+    Write-Output 'window-state: minimize/restore no-activate PASS'
+
     $notepad = Join-Path $env:SystemRoot 'System32\notepad.exe'
     $bgDry = @(& $win open $notepad --background --dry)
     if ($LASTEXITCODE -or (($bgDry -join ' ') -notmatch 'background=True')) {
@@ -239,7 +257,7 @@ try {
     if (-not (Test-Path -LiteralPath ($shot + '.receipt.json'))) { throw 'shot receipt 未生成。' }
     if (-not (Test-Path -LiteralPath ($see + '.uia.json'))) { throw 'see UIA map 未生成。' }
     $evidenceLabel = if ($KeepEvidence) { $evidence } else { 'temporary(auto-cleaned)' }
-    Write-Output "PASS: build/windows/probe/shot/see/screen/uia/uiaread/uiaset/invoke/dry-gates/bounded-focus/hud/open-bg coordinate=$coordinateState evidence=$evidenceLabel"
+    Write-Output "PASS: build/windows/probe/shot/see/screen/uia/uiaread/uiaset/invoke/dry-gates/bounded-focus/hud/window-state/open-bg coordinate=$coordinateState evidence=$evidenceLabel"
 } finally {
     if ($fixtureProcess -and -not $fixtureProcess.HasExited) {
         $fixtureProcess.CloseMainWindow() | Out-Null

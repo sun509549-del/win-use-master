@@ -180,7 +180,7 @@ Windows `SendInput` 是全局输入流，不携带目标 PID/HWND。工具会短
 - **UIPI**：普通权限无法可靠输入管理员窗口；自身或目标完整性读不到也按不安全拒绝，`--force` 绕不过。
 - **锁屏/UAC 安全桌面**：拒绝输入和不可信截图，不模拟同意。
 - **虚拟桌面**：目标 `cloaked` 时拒绝坐标写，不自动发送快捷键切桌面。
-- **隐藏窗口**：`windows --all` 把未显示的窗口标成 `state=hidden`（托盘态、尚未显示的编辑器、后台弹窗）。它们 `PrintWindow` 只有空帧，`screen` 拒绝，坐标写也拒绝——激活它等于替用户把窗口弹出来。
+- **隐藏窗口**：`windows --all` 把未显示的窗口标成 `state=hidden`（托盘态、尚未显示的编辑器、后台弹窗）。它们 `PrintWindow` 只有空帧，`screen` 拒绝，坐标写也拒绝——激活它等于替用户把窗口弹出来。最小化的窗口不同：用户明确要求操作该 app 时，`restore` 用 `SW_SHOWNOACTIVATE` 把它放回原位而不抢焦点，看完 `minimize` 还原布局；两者都打印前后状态。最小化（`state=min`）的窗口不同：用户明确要求时可用 `restore` 不激活地还原，看完用 `minimize` 放回去；两者都打印前后状态。
 - **遮挡**：落点最上层不是目标窗口就拒绝。
 - **HUD**：借前台时给用户可见提示，鼠标穿透；排除截图是 best effort，证据仍需抽查。
 
@@ -208,6 +208,7 @@ win.ps1 uia <hwnd|pid|owner>
 win.ps1 uiaread <hwnd|pid|owner> [名称或 AutomationId 过滤]
 win.ps1 idle
 win.ps1 frontmost
+win.ps1 restore | minimize <hwnd|pid|owner>   # 用户要求时还原/最小化窗口；SW_SHOW*NOACTIVE 不抢前台；隐藏窗口拒绝
 ```
 
 ### 语义写入（通常不抢焦点）
@@ -301,6 +302,8 @@ win-use-master/
 │   ├── calculator-profile.ps1 # 可选：真实 Windows 计算器档案回归
 │   ├── notepad-profile.ps1 # 可选：真实记事本 11 Document 可逆写档案回归
 │   ├── workbuddy-cdp-profile.ps1 # 可选：用户授权的 WorkBuddy CDP 实例上做零焦点可逆写
+│   ├── excel-com-profile.ps1 # 可选：Excel 私有 COM 实例写表→读回→另存→不经 Excel 验证文件
+│   ├── wps-et-com-profile.ps1 # 可选：WPS 表格 KET.Application 私有实例，同任务 + 第二实例重开读回
 │   ├── fixture.ps1       # 只在本机打开的受控 WinForms 测试窗
 │   └── smoke.ps1         # 编译、截图、UIA、闸门与输入回归
 └── references/
@@ -330,9 +333,12 @@ pwsh -NoProfile -File "$SKILL_DIR\tests\calculator-profile.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\notepad-profile.ps1"
 # 可选 Chromium/CDP 档案：需用户先 open <WorkBuddyAI.exe> --cdp 9333 --background 授权实例；测试不启停 app
 pwsh -NoProfile -File "$SKILL_DIR\tests\workbuddy-cdp-profile.ps1" -Port 9333
+# 可选 L0 COM 档案：各自新起私有自动化实例，不碰用户已打开的 Excel / WPS
+pwsh -NoProfile -File "$SKILL_DIR\tests\excel-com-profile.ps1"
+pwsh -NoProfile -File "$SKILL_DIR\tests\wps-et-com-profile.ps1"
 ```
 
-首个烟测会打开一个无外部副作用的本地 WinForms 测试窗，依次验证编译、只读 probe 的 PID 限定、后台截图与收据、`see`/UIA map、隔离 UIA worker、`uiaread` 静态文本与动作副作用回读、`ValuePattern`、`InvokePattern`、动作上限和安全闸预演，并在用户已空闲时验证短暂借前台的坐标输入、真实焦点占用时长与自身输入尾迹排除；用户正操作电脑时默认明确跳过 L2。发布前用 `-RequireCoordinate` 要求 L2 必须通过，它需要活动交互桌面且运行期间不要操作键鼠。若 Windows Foreground Lock 拒绝切前台，退出码 `2` 是安全拒绝，不应强行绕过。CDP owner 测试使用隐藏 HTTP fixture 验证错实例端口拒绝；动作收据测试使用本工具自己启动的临时无头 Edge，验证真实 `text/click/press/act`、脱敏、确定失败和请求/脚本截止时间的 `unknown`，随后只清理该测试 profile 对应进程；截图恢复测试使用两个同进程同位置窗口验证壳/渲染 sibling 选择与收据；UIA 超时测试确定性挂起 worker，验证父进程会终止它并把写结果标成 unknown。计算器测试是可选的机器档案回归：拒绝复用已打开的计算器，验证 AUMID 启动、UWP 宿主窗口、中文 UIA、`1+2=3` 回读，最后恢复 0 并正常关闭。记事本测试同样可选：拒绝复用运行中的记事本，也拒绝向恢复出的会话写入；验证 `see` 位置参数路径、空白文档的截图诊断、Document `ValuePattern` 写入与状态栏字符数、标签“已修改/未修改”两种指示器回读，再清空并关闭——记事本 11 关闭已修改标签不会提示而是留到下次会话，所以失败路径也会先清空。WorkBuddy 测试是唯一的真实 Chromium 写档案：它不启动、不重启、不关闭 app，只在用户已用 `--cdp` 启动授权实例、端口归属校验通过、输入区没有草稿时运行；`insert` 后要求发送键由禁用变可用，`SelectAll`+`Backspace` 撤回后要求发送键回到禁用、占位符重现，收据与终端差分都不得含输入正文。它从不按 Enter 或点发送。
+首个烟测会打开一个无外部副作用的本地 WinForms 测试窗，依次验证编译、只读 probe 的 PID 限定、后台截图与收据、`see`/UIA map、隔离 UIA worker、`uiaread` 静态文本与动作副作用回读、`ValuePattern`、`InvokePattern`、动作上限和安全闸预演，并在用户已空闲时验证短暂借前台的坐标输入、真实焦点占用时长与自身输入尾迹排除；用户正操作电脑时默认明确跳过 L2。发布前用 `-RequireCoordinate` 要求 L2 必须通过，它需要活动交互桌面且运行期间不要操作键鼠。若 Windows Foreground Lock 拒绝切前台，退出码 `2` 是安全拒绝，不应强行绕过。CDP owner 测试使用隐藏 HTTP fixture 验证错实例端口拒绝；动作收据测试使用本工具自己启动的临时无头 Edge，验证真实 `text/click/press/act`、脱敏、确定失败和请求/脚本截止时间的 `unknown`，随后只清理该测试 profile 对应进程；截图恢复测试使用两个同进程同位置窗口验证壳/渲染 sibling 选择与收据；UIA 超时测试确定性挂起 worker，验证父进程会终止它并把写结果标成 unknown。计算器测试是可选的机器档案回归：拒绝复用已打开的计算器，验证 AUMID 启动、UWP 宿主窗口、中文 UIA、`1+2=3` 回读，最后恢复 0 并正常关闭。记事本测试同样可选：拒绝复用运行中的记事本，也拒绝向恢复出的会话写入；验证 `see` 位置参数路径、空白文档的截图诊断、Document `ValuePattern` 写入与状态栏字符数、标签“已修改/未修改”两种指示器回读，再清空并关闭——记事本 11 关闭已修改标签不会提示而是留到下次会话，所以失败路径也会先清空。WorkBuddy 测试是唯一的真实 Chromium 写档案：它不启动、不重启、不关闭 app，只在用户已用 `--cdp` 启动授权实例、端口归属校验通过、输入区没有草稿时运行；`insert` 后要求发送键由禁用变可用，`SelectAll`+`Backspace` 撤回后要求发送键回到禁用、占位符重现，收据与终端差分都不得含输入正文。它从不按 Enter 或点发送。Excel 与 WPS 表格测试走 L0 COM：`New-Object -ComObject` 总是新起私有自动化进程，测试只对该进程写入、另存到临时目录并 Quit，再不经宿主 app 从 xlsx 的 XML 里核对 `SUM(D2:D4)=3640`；它们同时核对 exe 身份（WPS 在 32 位视图抢注了 `Excel.Application.12`）、Excel 必须先建工作簿再设 `Visible`、以及全部 COM 引用释放后进程确实退出。
 
 ## 许可证
 

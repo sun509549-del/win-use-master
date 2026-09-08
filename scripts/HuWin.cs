@@ -1023,6 +1023,30 @@ public class HuWin
         return !IsIconic(window);
     }
 
+    // Explicit, user-requested window-state changes that never take activation:
+    // SW_SHOWNOACTIVATE brings a minimized window back to its previous rect and
+    // SW_SHOWMINNOACTIVE minimizes it, both leaving the foreground untouched. They
+    // refuse hidden windows: un-hiding a tray app is the app's own decision.
+    public static bool RestoreNoActivate(long hwnd)
+    {
+        IntPtr window = new IntPtr(hwnd);
+        if (!IsWindow(window) || !IsWindowVisible(window)) return false;
+        if (!IsIconic(window)) return true;
+        ShowWindowAsync(window, SW_SHOWNOACTIVATE);
+        for (int i = 0; i < 40 && IsIconic(window); i++) Thread.Sleep(25);
+        return !IsIconic(window);
+    }
+
+    public static bool MinimizeNoActivate(long hwnd)
+    {
+        IntPtr window = new IntPtr(hwnd);
+        if (!IsWindow(window) || !IsWindowVisible(window)) return false;
+        if (IsIconic(window)) return true;
+        ShowWindowAsync(window, SW_SHOWMINNOACTIVE);
+        for (int i = 0; i < 40 && !IsIconic(window); i++) Thread.Sleep(25);
+        return IsIconic(window);
+    }
+
     // Launches an executable while asking its first window not to take activation
     // (STARTF_USESHOWWINDOW + SW_SHOWNOACTIVATE / SW_SHOWMINNOACTIVE). The request is
     // advisory: shells that call ShowWindow(SW_SHOWNORMAL) themselves still activate,

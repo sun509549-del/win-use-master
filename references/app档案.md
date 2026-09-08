@@ -272,9 +272,9 @@ L3_capture:
 
 可复现路径 `tests/notepad-profile.ps1`：`open(AUMID) → see（位置参数路径）→ 校验唯一 Document(ValuePattern)、单标签未修改、文档为空 → uiaset first → uiaread/uia 读回三指示器 → uiaset first '' → 读回归零 → CloseMainWindow`。
 
-### Microsoft Excel · 16.0.20326.20132 · 只读探测 2026-09-08
+### Microsoft Excel · 16.0.20326.20132 · L0 COM 真实任务 2026-09-08
 
-> 本条只来自 `probe.ps1 "Excel"`，**未启动、未实例化 COM、未截图、未写入**。不能据此点击或改用户工作簿。
+> 第四个可重放档案：`tests/excel-com-profile.ps1`。任务是“新建工作簿，写 3 行采购数据，金额公式与合计，另存 xlsx”，全程零焦点。`New-Object -ComObject Excel.Application` 起的是**私有 `/automation -Embedding` 进程**，与用户正在用的 Excel 无关；只写、只存、只退出这个私有实例。结果不经 Excel、直接从 xlsx 的 XML 里核对。
 
 ```yaml
 显示名: Excel
@@ -285,32 +285,168 @@ exe: C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE  # 核对 2026-09
 包标识/AUMID: Microsoft.Office.EXCEL.EXE.15
 架构: x64
 进程:
-  主进程: 本轮未运行 EXCEL.EXE
-  渲染/子进程判据: 安装目录下的 SDXHelper.exe 会被目录前缀算进“相关 PID”，不是 Excel 本体
-窗口: 本轮无 Excel 顶层窗口
+  自动化实例: EXCEL.EXE /automation -Embedding，Medium，启动约 4.5–5.7 秒；Quit 后进程自己退出（前提见已知坑）
+  渲染/子进程判据: 安装目录下的 SDXHelper.exe 会被目录前缀算进“相关 PID”，不是 Excel 本体；自动化实例还会派生一个 0 线程的 EXCEL.EXE 子进程，随父进程消失
+窗口:
+  owner: EXCEL
+  class: XLMAIN
+  title 规则: “<工作簿名> - Excel”
+  主窗口识别: Application.Hwnd；注意 Workbooks.Add 之后 Hwnd 会换成新的 XLMAIN，旧句柄保持隐藏
+  完整性: Medium
 
 L0:
-  CLI: 未测（probe 不执行 --help）
-  URL protocol: 注册表出现 ms-excel:// → protocolhandler.exe；同目录还会列出 ms-word/ms-powerpoint/OneNote 等，因为匹配的是安装根而不是单 exe。未调用任何路由。
-  本地端口: 无（Excel 未运行）
-  CDP: 未发现；目录内有 WebView2Loader.dll，只是静态信号
-  COM: 有。Excel.Application / Excel.Application.16 → LocalServer32 `EXCEL.EXE /automation`；另有 Excel.Sheet.*、Excel.Chart.*。类型库 “Microsoft Excel 16.0 Object Library”。未执行 New-Object（会新起实例）。
-  启动/重启风险: `--background` 未测；COM 实例化可能弹出或隐藏启动 Excel，未授权前禁止
+  CLI: 未测
+  URL protocol: ms-excel:// → protocolhandler.exe；同目录列出的 ms-word/ms-powerpoint/OneNote 属于套件，不是 Excel 接口。未调用。
+  本地端口: 无
+  CDP: 无；WebView2Loader.dll 只是静态信号
+  COM: Excel.Application（=Excel.Application.16）。实测可用：Workbooks.Add、Range.Value2/Formula、Calculate、Worksheet.Name、SaveAs(path, 51=xlsx)、Close(false)、Quit
+  COM 身份核对: 用 Application.Hwnd → pid → exe 路径必须是 EXCEL.EXE。WPS 在 32 位注册表视图把 Excel.Application.12 指向自己的 et.exe；64 位 pwsh 拿到微软 Excel，32 位宿主可能拿到 WPS
+  启动/重启风险: CoCreate 永远新起私有进程；不要对它之外的 Excel 调 Quit
 
-L1_UIA: 未运行，未测
-L2_SendInput: 未测
-L3_capture: 未测
+L1_UIA:
+  总体: 部分可用（窗口可见后）
+  uiaread: 状态栏 StatusBar、Text“单元格模式 就绪”、Edit AutomationId=FormulaBar value=“=SUM(D2:D4)”、Edit 字体/字号、Edit TellMeTextBoxAutomationId
+  uia: 180 个动作元素（到上限）；功能区 Button/TabItem 带 AutomationId（FileSave、AutoSaveSwitch、TabHome、TabFormulas…）；账户菜单 MeControlWidget 的 Name 是用户姓名，不入档案
+  名称框: 不在 uiaread 的可读类型里；未按 Edit value=“D5” 暴露
+  网格: 180 上限内没到单元格；有 COM 就不需要
+
+L2_SendInput: 未测；有 COM 不降级
+
+L3_capture:
+  PrintWindow_后台: 窗口可见后 1920x1117、颜色桶 46，完整
+  screen_合成: 5/5 采样未遮挡（自动化窗口新出现时在前）
+  窗口未显示时: 整帧 1 桶、UIA 空——那是 Visible 没生效，不是 Excel 的能力
 
 验证:
-  本轮只验证“注册表能指向该 exe 的 COM 服务器”；不验证对象模型可写或能连上用户已打开的簿
+  输入生效: COM 读回 D5=3640；UIA 编辑栏读到同一公式
+  最终副作用: 另存的 xlsx 里 sheet1.xml `<c r="D5"><f>SUM(D2:D4)</f><v>3640</v>`，workbook.xml 含重命名的工作表——不经 Excel 直接验证
+  私有实例退出: Quit 后 30 秒内进程消失
 
 安全:
   风险类别: 普通办公；用户工作簿可能含他人/未发布数据
-  停手点: 保存、另存为、发送、共享、宏
+  停手点: 对用户已打开工作簿的保存/另存/发送/共享/宏；本档案只碰临时目录的新文件
+  会话隔离: 私有实例的 Workbooks.Count 归零后才 Quit；预存在的 EXCEL pid 一律不动
 
 已知坑:
-  - 2026-09-08 probe 把 Office16 目录下的 SDXHelper 算进相关进程，并扫到 Word/PowerPoint 的 protocol 与 typelib。选层时以 Excel.Application 为准，不要把同套件其它 ProgID 当成已验证的 Excel 接口。
-  - New-Object -ComObject Excel.Application 不是“连接当前窗口”；在用户已打开工作簿时尤其危险。
+  - Application.Visible=True 在没有工作簿窗口时被忽略（5.1 与 7 一样）；先 Workbooks.Add() 再设，否则 XLMAIN 隐藏、UIA/PrintWindow 全空。
+  - pwsh 7 的 COM 绑定拒绝 Int32 写入 Range.Value2（“cannot cast Int32 to String”）；写 [double]。
+  - COM 对象不能从 PowerShell 函数 return：集合会被展开（空 Workbooks 变 $null）；`Write-Output -NoEnumerate` 又会让属性写入失败。赋值后再登记引用。
+  - Range/Worksheet/Workbook 的 RCW 不释放就 Quit，/automation 进程会挂到 DCOM ping 超时（约 6 分钟）才退。全部 FinalReleaseComObject 后 30 秒内正常退出。
+  - probe 会把 Office16 目录下的 SDXHelper 算进相关进程，并扫到 Word/PowerPoint 的 protocol 与 typelib；选层以 Excel.Application 为准。
+```
+
+### WPS 表格 · 12.1.0.23125 · L0 COM 真实任务 2026-09-08
+
+> 第五个可重放档案：`tests/wps-et-com-profile.ps1`，任务与 Excel 相同，外加“第二个私有实例重新打开文件读回合计”。用户的 WPS 当时正在后台运行（8 个 wps.exe），`KET.Application` 仍新起了私有 `wps.exe /prometheus /et /Automation` 进程，没有碰用户实例。
+
+```yaml
+显示名: WPS Office / WPS 表格
+实测日期: 2026-09-08
+版本: 12.1.0.23125                          # 核对 2026-09-08
+安装形态: Win32，x86
+exe: D:\ruanjian\wps\WPS Office\12.1.0.23125\office6\wps.exe  # 核对 2026-09-08；表格组件 et.exe 同目录；对外文档脱敏
+包标识/AUMID: Kingsoft.Office.KPrometheus
+架构: x86 (0x014C)；64 位 pwsh 可 CoCreate 其 out-of-proc COM 服务器
+进程:
+  自动化实例: 新 pid（wps.exe /prometheus /et /Automation），启动 1.3–2.1 秒；Quit 后 20 秒内退出
+  用户实例: 常驻 wps.exe + promecefpluginhost.exe（CEF）+ wpscloudsvr.exe；首页是 CEF（Kingsoft.Office.cefhomepage）
+窗口:
+  owner: wps
+  class: XLMAIN（伪装成 Excel 的类名）；标题 “WPS Office”，保存后 “<文件名> - WPS 表格”
+  主窗口识别: 新 pid + class=XLMAIN + 可见；同 pid 更大的 KLiteMainWindowShadowBorder 是阴影窗，不是目标
+  Application.Hwnd: 不是顶层窗口，不能用它定位
+  完整性: Medium
+
+L0:
+  CLI: 未测
+  URL protocol: 未发现指向 wps.exe 的注册项
+  本地端口: wpscloudsvr 监听 4709 等，非 CDP
+  CDP: 无；CEF 首页进程无 remote-debugging 参数
+  COM: KET.Application（表格）可用：Workbooks.Add/Open、Range.Value2/Formula、Calculate、SaveAs(path, 51) 产出可被 Excel 结构解析的 xlsx、Close、Quit。Application.Name 报 “Microsoft Excel”、Version “12.0”。另有 KWPS.Application（文字）、KWPP.Application（演示）未测
+  ProgID 抢注: 32 位视图 Excel.Application.12 → et.exe；要 WPS 就用 KET.Application，要微软 Excel 用 64 位宿主并核对 exe 路径
+  启动/重启风险: CoCreate 新起私有进程；用户 WPS 在后台时也不复用
+
+L1_UIA:
+  总体: 部分——可操作 55 个 Button（工具栏），可读文本 0；编辑栏没有作为 Edit 暴露
+  暗拒: 不要期待 uiaread 读到公式；读值走 COM
+
+L2_SendInput: 未测；有 COM 不降级
+
+L3_capture:
+  PrintWindow_后台: 867x536、颜色桶 115，完整
+  screen_合成: 私有窗口出现在 Cursor 之后，5/5 被遮挡——合成图拍不到它，PrintWindow 才是它的内容
+  UIA/截图目标: 必须是 XLMAIN；对阴影窗 KLiteMainWindowShadowBorder 截图是 1 桶、UIA 为空
+
+验证:
+  输入生效: COM 读回 D5=3640
+  最终副作用: xlsx sheet1.xml `SUM(D2:D4)`/3640（不经 WPS）；第二个私有实例 Workbooks.Open 读回 3640 且工作表名一致
+
+安全:
+  风险类别: 普通办公；用户文档在另一个进程里
+  停手点: 对用户实例的 Quit/保存/云同步；本档案只碰临时目录新文件
+  残留: 结束后新出现的 wps.exe 多为用户实例派生的 CEF 助手（命令行含 CefRenderEntryPoint），不是我们的
+
+已知坑:
+  - `Application.Hwnd` 与 “最大的窗口” 都会选错目标，按 class=XLMAIN 选。
+  - 名字“Microsoft Excel”、类名 XLMAIN、ProgID Excel.Application.12 全是 WPS 的兼容伪装；任何按名字判断“是不是 Excel”的逻辑在装了 WPS 的机器上都不可信。
+```
+
+### QQ · 9.9.21（QQ NT，Electron）· 只读窗口实测 2026-09-08
+
+> 用户已登录的 QQ 在托盘/最小化态。只做 probe / see / uia / uiaread / shot / screen 和端口探测；**未输入、未发送、未重启**。为了观察把最小化的主窗还原，结束后按原样最小化回去。截图、UIA 里的昵称/会话文字只留本机。
+
+```yaml
+显示名: QQ
+实测日期: 2026-09-08
+版本: 启动器 QQ.exe 9.9.21.39038；协议处理器指向 versions\9.9.32-50776\resources\app\timwp.exe  # 核对 2026-09-08
+安装形态: 便携目录 Electron；QQ.exe 是启动器，真实应用在 versions\<ver>\
+exe: D:\ruanjian\qq\QQ.exe                 # 对外文档脱敏
+包标识/AUMID: QQ（开始菜单 AppID 就是 “QQ”）
+架构: x64
+进程:
+  主进程: QQ.exe Medium + 十余个子进程（renderer 为 Low 或完整性不可读）+ crashpad_handler
+  多实例: 允许多账号并行——再启动一次不会激活已登录窗口，而是新起进程弹登录窗
+窗口:
+  owner: QQ
+  class: Chrome_WidgetWin_1（主窗、聊天窗、登录窗都是）；Chrome_WidgetWin_0 是隐藏的渲染宿主
+  主窗口识别: 已登录实例里 title=“QQ” 且尺寸最大的可见/最小化 WidgetWin_1（本轮 1734x1461）；“QQ(窗口)” 是独立聊天窗
+  托盘态: 主窗 state=min，其余若干 1081x961/1200x900 的 WidgetWin_1 state=hidden
+  完整性: 主进程 Medium
+
+L0:
+  CLI: 未测
+  URL protocol: tencent://、mqqapi://、ntqq-notification://、guild-notification:// → timwp.exe；未调用
+  本地端口: 主进程监听 4001/4301（非 HTTP）、5284（HTTP 400）、4310/9210（HTTP 200，不是 CDP）
+  CDP: 无 remote-debugging 参数；未授权 --relaunch，未测能否接受
+  COM: 无（probe 早先把 QQ 音乐算进来是安装根前缀 bug，已修）
+  启动/重启风险: `open QQ` = 新登录窗，不是显示已登录窗口；--relaunch 会关掉登录会话
+
+L1_UIA:
+  总体: 可用（Chromium 无障碍树对 UIA 开放）
+  see/uia: 49 个动作元素——Button=47（InvokePattern 43，如 消息/联系人/空间/频道/游戏、在线状态、切换为经典模式、最小化/最大化/关闭）、Edit=1（顶部搜索框，ValuePattern+TextPattern）、Document=1（AutomationId=RootWebArea）
+  uiaread: 300 个（到上限）：Text=298、Edit=1、Document=1——会话列表文字可读，含隐私
+  与 Mac 对照: Mac 档案写 “AX 树断在 AXWebArea”；Windows 上 UIA 能进到页面内元素，不能照抄
+  未验证: 聊天输入框写入（未做，停手线附近）
+
+L2_SendInput: 未测；闸预检 desktop=pass/UIPI=pass
+
+L3_capture:
+  PrintWindow_后台: 1734x1461、颜色桶 232，完整；刚还原的第一帧曾失败一次，几百毫秒后成功 → 工具已加一次 400ms 重试
+  screen_合成: 5/5 被前台 Cursor 遮挡（还原不激活，窗口在后面）；合成图不是 QQ 内容
+  隐藏/最小化态: 截图不可用，须先 restore
+
+验证:
+  本轮最强证据: UIA 树可读 + PrintWindow 完整 + 端口非 CDP
+
+安全:
+  风险类别: 高敏感私人通信
+  停手点: 发送、转发、删除会话、登录/切换账号、任何对聊天输入框的写入
+  敏感像素/文本: 全部会话、昵称、头像、未读数；快照与截图不入库
+  布局: 观察完成后 minimize 回原状
+
+已知坑:
+  - `open QQ` 会起第二个实例弹登录窗；已登录窗口只能 restore（最小化态）或由用户点托盘。
+  - probe 的安装根 `D:\ruanjian\qq` 曾前缀匹配到 `D:\ruanjian\qqyinyue`，把 QQ 音乐的 COM 算进 QQ → 2026-09-08 已编码为目录级匹配。
 ```
 
 ### WorkBuddy AI · 5.4.2 · CDP 可逆写实测 2026-09-08
@@ -443,9 +579,18 @@ L3_capture:
   L2: 隐藏窗口被闸拒绝（BLOCK(hidden)）；显示它属于替用户改状态，交还用户
   CDP: 命令行无 remote-debugging-port；CEF 是否接受该参数未测（需用户授权重启剪映）
 
+2026-09-08 第三次观察（用户要求跑任务，把最小化的「剪映专业版」主窗 restore 后只读）:
+  再启动根启动器: 转交给已运行实例后退出，没有把任何窗口显示出来
+  主窗: 0x2C104C “剪映专业版” Qt622QWindowIcon，还原后 1752x1170，首页（登录入口、模板、我的云空间、功能入口、本地草稿区）
+  PrintWindow: 1752x1170、颜色桶 404，完整——Mac 档案“主窗能后台截”在 Windows 可见态成立
+  screen: 404/415 桶，5/5 未遮挡（restore 把它带到了前面）
+  UIA: `uia` 与 `uiaread` 都超过 6 秒被隔离 worker 终止——Qt 的 UIA provider 在这个窗口上挂住；L1 不可用，且不能直接在 agent 进程里调 UIA
+  版本更新弹窗: 仍隐藏，无法复验 Mac 的“更新弹窗截不到”
+  结束: minimize 回原状；未点任何按钮、未开草稿
+
 验证:
-  本轮最强证据: 启动器 ≠ 编辑器；环境检测是独立 Qt 进程；隐藏态下截图/UIA 全部为空是窗口状态问题，不是能力结论
-  未验证: 可见编辑器的 PrintWindow/UIA、时间线、导出、CDP
+  本轮最强证据: 启动器 ≠ 编辑器；环境检测是独立 Qt 进程；隐藏态下截图/UIA 全部为空是窗口状态问题；可见态 PrintWindow 完整而 UIA 挂起
+  未验证: 时间线、导出、CDP、更新弹窗截图
 
 安全:
   风险类别: 媒体工程
@@ -461,6 +606,19 @@ L3_capture:
 ### Blender · 本机未安装 · 2026-09-08
 
 开始菜单、`Get-Command blender`、`C:\Program Files\Blender Foundation`、`D:\ruanjian` 均无安装。不编造 Windows 版 Python/`--background --python` 结论。用户自行安装并授权独立测试实例后，再按模板从 `probe.ps1` 重测。
+
+## 四·五、跨 app 的共性结论（2026-09-08，样本：计算器、记事本、WorkBuddy、Excel、WPS 表格、QQ、剪映）
+
+每条至少两个不同实现复现；坐标、端口、HWND 一律不在此处。
+
+1. **起始状态多半是“没有可见窗口”。** QQ、WPS、剪映、WorkBuddy 都在托盘/最小化态运行，Excel 自动化实例默认隐藏。`windows` 默认列不到它们，`--all` 里是 `state=hidden|min`；此时截图整帧 1 桶、UIA 空树、`screen` 拒绝——这是窗口状态，不是 app 能力。先分清状态再下结论；最小化的用 `restore`（不激活），隐藏的交给用户。
+2. **“再启动一次”不等于“显示已运行的窗口”。** QQ 会新起实例弹登录窗；剪映启动器转交后什么都不显示；Excel/WPS 的 COM 永远新起私有进程。`open` 对运行中的 app 只保证进程层的动作，窗口层必须回读 `windows`。
+3. **UIA 可用性不能按框架猜。** 同为 Electron：QQ 的 Chromium 树对 UIA 完整可读（Button/Edit/Document + 300 条文本），WorkBuddy 是空树。Qt：剪映 provider 直接挂死 6 秒，记事本（WinUI）Document 可写。WPS 自绘只露 55 个 Button，Excel 编辑栏可读而网格到不了。现场 `uia`/`uiaread` 各试一次，而且只能在隔离 worker 里试——剪映证明了为什么。
+4. **COM 是 Windows 的 AppleScript 字典，但要核对身份。** Excel 与 WPS 共用 ProgID（Excel.Application.12）、窗口类名（XLMAIN）甚至 Application.Name（“Microsoft Excel”）；32/64 位注册表视图决定谁应答。exe 路径是唯一可信身份；用 KET.Application 明确指 WPS。COM 对象不能穿过 PowerShell 函数返回，RCW 不释放会让进程挂到 DCOM 超时。
+5. **可见窗口的 PrintWindow 基本可靠；空帧几乎都是状态问题。** 七个可见窗口全部截到（46–404 桶）。复现的三种空帧：窗口隐藏（剪映、未显示的 Excel）、空白文档（记事本）、刚还原的首帧（QQ，已加一次 400ms 重试）。“app 拒绝后台渲染”本轮一次都没遇到——别把它当默认解释。
+6. **`screen` 拍到的常常是别的窗口。** 新出现的私有窗口（WPS、Excel 自动化）和 `restore` 回来的窗口（QQ）都排在前台 IDE 后面，5/5 采样被遮；剪映环境检测被 QQ 挡住。合成图只做交叉验证，不做内容证据。
+7. **本地端口 ≠ CDP。** WorkBuddy 多个端口 404，QQ 两个 HTTP 200，剪映 7264 无响应，WPS 云服务 4709——全都不是 CDP。只有 `/json/version` 返回 `webSocketDebuggerUrl` 且 owner 属于目标进程树才算。
+8. **状态指示器比像素可信。** WorkBuddy 发送键 disabled↔enabled、记事本“N 个字符”与标签“已修改”、Excel 编辑栏公式、计算器结果文本、WPS/Excel 另存文件里的缓存值——每个档案的“最强证据”都不是截图。
 
 ## 五、如何写“可用”
 

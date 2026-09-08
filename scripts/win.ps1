@@ -967,7 +967,7 @@ switch ($Command.ToLowerInvariant()) {
                 $receipt['recoveredFrom'] = @{ hwnd = Format-Hwnd $shot.RecoveredFrom.Hwnd; pid = $shot.RecoveredFrom.Pid; owner = $shot.RecoveredFrom.Owner }
             }
             $sidecar = Save-Receipt $receipt $out
-            $elements = Get-UiaElements $w
+            $elements = @(Get-UiaElements $w)
             $mapPath = $out + '.uia.json'
             Save-UiaMap $w $elements $mapPath $out
             Write-Output "截图: $out ${ow}x${oh}px（图上坐标可直接配 @$out 使用）"
@@ -990,9 +990,9 @@ switch ($Command.ToLowerInvariant()) {
     'uia' {
         if (-not $CommandArgs.Count) { Stop-Hu '用法: win.ps1 uia <hwnd|pid|owner>' }
         $w = Resolve-HuWindow $CommandArgs[0]
-        $first = Get-UiaElements $w
+        $first = @(Get-UiaElements $w)
         Start-Sleep -Milliseconds 250
-        $elements = Get-UiaElements $w
+        $elements = @(Get-UiaElements $w)
         Write-Output "UIA window=$(Format-Hwnd $w.Hwnd) pid=$($w.Pid) elements=$($elements.Count) first-pass=$($first.Count)"
         $elements | ForEach-Object { Write-Output (Format-UiaElement $_) }
         if (-not $elements.Count) { Write-Output '→ L1 暂不可用：Chromium 系走 CDP，其它走 L2 坐标。' }

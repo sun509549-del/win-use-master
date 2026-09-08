@@ -242,6 +242,130 @@ L3_capture: 未测
   - New-Object -ComObject Excel.Application 不是“连接当前窗口”；在用户已打开工作簿时尤其危险。
 ```
 
+### WorkBuddy AI · 5.4.2 · 只读窗口实测 2026-09-08
+
+> `open --background` 启动后只做 probe / shot / see / uia / screen。**未输入、未发送、未 `--relaunch`、未开 CDP。** 截图留在本机临时目录，不入库。
+
+```yaml
+显示名: WorkBuddy AI
+实测日期: 2026-09-08
+版本: 5.4.2 / 文件 5.4.2.0                  # 核对 2026-09-08
+安装形态: 便携/本地安装 Electron
+exe: D:\ruanjian\WorkBuddyAI\WorkBuddyAI.exe  # 核对 2026-09-08；对外文档脱敏
+包标识/AUMID: WorkBuddy.WorkBuddyAI
+架构: x64
+进程:
+  主进程: WorkBuddyAI.exe Medium
+  渲染/子进程判据: 多个 WorkBuddyAI.exe + `--type=gpu-process|utility`；另有 editor_sdk.exe、用户目录 node。probe 会把 git/cmd 子孙算进相关 PID，选 CDP 端口时必须再核 exe。
+窗口:
+  owner: WorkBuddyAI
+  title 规则: 精确 “WorkBuddy AI”
+  class: Chrome_WidgetWin_1
+  主窗口识别: 可见、面积最大的 WidgetWin_1；另有无标题 WidgetWin_0
+  完整性: Medium
+  `--background`: 生效（foreground=kept）
+
+L0:
+  CLI: 未测
+  URL protocol: workbuddy-ai:// → WorkBuddyAI.exe "%1"；未调用
+  本地端口: 127.0.0.1 上多个监听，对本机 /json/version 均 HTTP 404，不是 CDP
+  CDP: 命令行无 --remote-debugging-port。Electron 静态信号明确。未授权 `--relaunch`，本轮无 CDP
+  COM: 无
+  启动/重启风险: 普通 open 会进用户会话；托盘进程 CloseMainWindow 后仍可能残留
+
+L1_UIA:
+  总体: 不可用（主窗口）
+  树: probe 统计 Pane=2 Window=1，可编辑/可操作 0
+  see/uia: 0 个可操作元素；uiaread 无 Text/Edit
+  暗拒: 不要在空树上 uiaset
+
+L2_SendInput: 未测（无必要的可逆写目标，且会看到用户会话）
+
+L3_capture:
+  PrintWindow_后台: 主窗口首次 1815x1203、颜色桶 67，与窗口 1:1
+  screen_合成: 同几何 1815x1203、颜色桶 67，遮挡采样 5/5 命中目标
+  see 降采样: 随后一张收据 colorBuckets=1（暗色 UI 或瞬时空帧）；不能单次判黑
+  CDP_shot: 无端口
+  壳窗口/渲染窗口: 主窗 WidgetWin_1 可直接 PrintWindow，未走 sibling
+
+验证:
+  本轮最强证据: 窗口类 + 后台截图有内容 + 本地端口非 CDP + UIA 空树
+  未验证: 输入框写入、发送键、CDP insert
+
+安全:
+  风险类别: 办公客户端
+  停手点: 发送、分享、删除会话
+  敏感像素: 侧栏会话、账号、本地项目路径；证据不入库
+
+已知坑:
+  - 开始菜单 “WorkBuddy AI” vs exe WorkBuddyAI；不要启动 updater。
+  - 有本地端口 ≠ CDP。
+  - `win.ps1 see --out` 经 `pwsh -File` 时 `--out` 会撞 PowerShell 公共参数，需 `pwsh -Command` 或把路径当位置参数。
+```
+
+### 剪映专业版 · 10.4.0.13957 · 启动器 + 环境检测弹窗 2026-09-08
+
+> `open --background` 启动根目录启动器。8 秒内没有编辑器主窗，只出现版本目录里的 `VEDetector.exe`「环境检测」。**未点确定、未开草稿、未导出。** 弹窗用 CloseMainWindow 关掉。
+
+```yaml
+显示名: 剪映专业版
+实测日期: 2026-09-08
+版本: 启动器/产品 10.4.0.13957；VEDetector 文件版本 10.4.0.f23c7304ec7  # 核对 2026-09-08
+安装形态: Win32 多版本并列 + 根目录启动器
+exe: D:\ruanjian\jianying\JianyingPro\JianyingPro.exe  # 启动器
+版本目录 exe: D:\ruanjian\jianying\JianyingPro\10.4.0.13957\  # 含 JianyingPro.exe 与 VEDetector.exe
+包标识/AUMID: Bytedance.JianyingPro
+架构: x64
+进程:
+  启动器: `open --background` 报 pid 后退出；foreground=kept，但 8s 内无主窗
+  本轮实际窗口进程: VEDetector.exe Medium
+窗口:
+  编辑器主窗: 未出现
+  弹窗 owner: VEDetector
+  title 规则: “环境检测”
+  class: Qt622QWindowIcon
+  尺寸: 615x462
+
+L0:
+  CLI: 未测
+  URL protocol: vega://、videocut://（启动器）；未调用
+  本地端口: VEDetector 无监听
+  CDP: 启动器与 VEDetector 命令行均无 remote-debugging-port。版本目录有 libcef，CEF ≠ 已开放 CDP
+  COM: 旧 9.x 的 AppNotificationActivated，不是对象模型
+  启动/重启风险: 根启动器会拉起检测弹窗，不保证进入编辑器；不要对「确定」invoke
+
+L1_UIA:
+  总体: 弹窗部分可用，编辑器未测
+  弹窗 see: e1 无 Name 的 VETitleBarButton；e2 Name=确定 QPushButton，均 InvokePattern
+  probe 统计: 14 元素 / 可编辑 11 / 可操作 14（含 Group/Text）
+  停手: 本轮不 invoke「确定」
+
+L2_SendInput: 未测
+
+L3_capture:
+  PrintWindow_后台: 弹窗 615x462、颜色桶 66，内容完整
+  screen_合成: 同几何颜色桶 71，但遮挡采样 5/5 落在其它窗口（本机是 QQ）；合成图不能当弹窗内容
+  与 Mac 档案对照: “主窗能后台截、更新弹窗截不到”在本轮不成立——弹窗 PrintWindow 能截到，合成图却被遮挡。不能抄 Mac 结论。
+  编辑器主窗: 未出现，未测
+
+验证:
+  本轮最强证据: 启动器 ≠ 编辑器；环境检测是独立 Qt 进程；PrintWindow vs screen 对弹窗结论相反
+  未验证: 时间线、导出、CEF 主画布截图、CDP
+
+安全:
+  风险类别: 媒体工程
+  停手点: 导出、发布、删除草稿、覆盖工程、点检测弹窗的确定（可能继续启动/更新）
+
+已知坑:
+  - 根目录启动器与 `10.4.0.13957\JianyingPro.exe` 不是同一个文件。
+  - `open --background` 成功只保证启动器进程起来，不保证编辑器窗口。
+  - 弹窗 UIA 的「确定」是高风险默认按钮，先读完整文案。
+```
+
+### Blender · 本机未安装 · 2026-09-08
+
+开始菜单、`Get-Command blender`、`C:\Program Files\Blender Foundation`、`D:\ruanjian` 均无安装。不编造 Windows 版 Python/`--background --python` 结论。用户自行安装并授权独立测试实例后，再按模板从 `probe.ps1` 重测。
+
 ## 五、如何写“可用”
 
 ### L0/CDP

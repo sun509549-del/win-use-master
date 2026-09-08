@@ -22,7 +22,7 @@
 - PowerShell 7 + Node.js 24 是当前开发/CI 基线；Node.js 22+ 属支持范围。
 - `scripts/HuWin.dll` 是生成物，不提交；`win.ps1` 会在缺失或源码更新时重编译。
 - 收据 schema 已统一为 `win-use-master/receipt-v1`、`win-use-master/uia-map-v1`、`win-use-master/action-receipt-v1`。
-- 完整可重放档案仍是 Windows 计算器 11.x。Excel 16.x 只有 2026-09-08 的只读 COM/协议探测，未做读写回归。
+- 完整可重放档案仍是计算器 11.x。WorkBuddy 5.4.2 已做 `--background` + 只读截图/UIA（空树、无 CDP）。剪映 10.4.0 本轮只见到 VEDetector「环境检测」弹窗。Blender 未安装。证据图不入库。
 
 ## 3. 代码地图
 

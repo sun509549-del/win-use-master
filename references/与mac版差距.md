@@ -17,6 +17,7 @@
 | 每一步机器可读取证 | 截图 receipt；L1/L2 after action 链；CDP `action-receipt-v1` |
 | 陌生 provider 不能卡死 agent | UIA 全部放入 6 秒隔离 worker，写超时标 `unknown` |
 | CDP 不能无限等待 | HTTP/连接 5 秒、请求 6 秒、auto 候选限额、act 200 步/120 秒；写超时标 `unknown` |
+| 一键安装与干净环境回归 | 公开 GitHub 仓库可被 `npx skills add` 识别；Windows CI 负责解析、构建和无头 CDP 集成测试 |
 | app 经验回流与版本自检 | `app档案.md`、30 天静默版本检查 |
 
 ## 仍缺少或样本不足
@@ -24,7 +25,6 @@
 | 优先级 | 差距 | 当前状态 / 完成标准 |
 |---|---|---|
 | P0 | 真实 app 档案覆盖不足 | 目前只有 Windows 计算器 11.x 的完整可重放档案。至少再补一个 Win32/WPF app、一个 Chromium/WebView app，并记录版本、重定位规则、读写验证和证伪条件。不得为补档案擅自改用户数据。 |
-| P1 | 一键安装/分发体验未对齐 | Mac 版可直接 `npx skills add`；Windows 版目前是复制目录后编译。需要独立可安装仓库/发布包、安装说明与干净机器验证。 |
 | P1 | 面向用户的真实案例与视觉素材不足 | Mac 版有 Blender/桌面客户端案例、GIF 和架构图；Windows 版目前重工程验证、轻展示。需要经脱敏的 Windows 原生/UIA/CDP 案例与架构图，但不能拿测试 fixture 冒充生产案例。 |
 | P1 | 单 app 经验的广度不足 | Mac 档案覆盖多个 Electron 和原生 app；Windows 需要随真实任务渐进积累，不能凭框架名称推断 UIA/CDP/截图一定可用。 |
 | P2 | HUD 可配置性较少 | 已有不激活、鼠标穿透和 best-effort 排除捕获；尚无 Mac 版的样式选择和显式可捕获演示开关。 |
@@ -40,4 +40,4 @@ Mac 版可以先尝试向指定 PID 投递合成事件，失败后再借焦点�
 
 1. 在不复用用户已打开实例的前提下，补一个真实 Chromium/WebView 档案回归。
 2. 再补一个常见 Win32/WPF app 的只读 + 可逆写回归。
-3. 最后处理发布安装、案例素材和 HUD 可配置项。
+3. 最后处理案例素材和 HUD 可配置项。

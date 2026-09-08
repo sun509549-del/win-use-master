@@ -1,0 +1,81 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Parse, build and headless integration tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Parse PowerShell and JavaScript
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $parseErrors = [Collections.Generic.List[object]]::new()
+          Get-ChildItem -LiteralPath . -Recurse -Filter '*.ps1' | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            foreach ($error in $errors) { $parseErrors.Add($error) }
+          }
+          if ($parseErrors.Count) {
+            $parseErrors | ForEach-Object { Write-Error "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+            throw "PowerShell parse failed with $($parseErrors.Count) error(s)."
+          }
+          node --check cdp.js
+          if ($LASTEXITCODE -ne 0) { throw 'cdp.js parse failed.' }
+          node --check scripts/cdp.js
+          if ($LASTEXITCODE -ne 0) { throw 'scripts/cdp.js parse failed.' }
+          node --check tests/cdp-fixture.js
+          if ($LASTEXITCODE -ne 0) { throw 'tests/cdp-fixture.js parse failed.' }
+
+      - name: Build native helper
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File scripts/build.ps1
+          if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed with exit $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath scripts/HuWin.dll -PathType Leaf)) { throw 'HuWin.dll was not generated.' }
+
+      - name: Verify CDP port ownership guard
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/cdp-ownership.ps1
+          if ($LASTEXITCODE -ne 0) { throw "cdp-ownership.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify CDP receipts, redaction and deadlines
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/cdp-action-receipt.ps1
+          if ($LASTEXITCODE -ne 0) { throw "cdp-action-receipt.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Confirm generated artifacts remain untracked
+        shell: pwsh
+        run: |
+          $unexpected = @(git status --short --untracked-files=all)
+          if ($LASTEXITCODE -ne 0) { throw 'git status failed.' }
+          if ($unexpected.Count) {
+            $unexpected | Write-Output
+            throw 'Tests left tracked or unignored artifacts in the worktree.'
+          }
+

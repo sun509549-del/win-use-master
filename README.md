@@ -42,7 +42,19 @@
 
 ### 安装与编译
 
-把 `win-use-master` 整个目录放进 runtime 的 skills 目录，然后编译一次 C# 助手层：
+推荐通过 Agent Skills CLI 安装：
+
+```powershell
+npx skills add sun509549-del/win-use-master -g
+```
+
+想先确认仓库能被识别、但不安装：
+
+```powershell
+npx skills add https://github.com/sun509549-del/win-use-master --list
+```
+
+也可以把 `win-use-master` 整个目录手动放进 runtime 的 skills 目录，然后编译一次 C# 助手层：
 
 ```powershell
 $SKILL_DIR = "C:\path\to\win-use-master"
@@ -52,6 +64,8 @@ pwsh -NoProfile -File "$SKILL_DIR\scripts\build.ps1"
 `win.ps1` 发现 DLL 缺失或比源码旧时也会尝试现场编译；显式运行 `build.ps1` 更容易提前发现环境问题。若文件来自网络并被 Windows 标记，请先核对来源和哈希，再由你决定是否只对这个仓库执行 `Unblock-File`；不要全局降低 Execution Policy 或关闭 Defender。
 
 Skill 每 30 天至多静默检查一次 git `origin` 是否有新版本；检查失败不影响当前任务，也不会自动 pull。发现落后只在任务结束后提示，由用户决定是否更新。非 git 安装只刷新本地检查日期。
+
+公开仓库的 Windows CI 会在干净 runner 上执行 PowerShell/JavaScript 解析、C# helper 构建、CDP 端口归属防串线，以及无头 Edge 动作收据、脱敏与超时回归。需要活动交互桌面的 `smoke.ps1`、截图 sibling 和真实计算器测试只在本机运行，云 CI 不伪造这些结论。
 
 ### 第一次探测
 

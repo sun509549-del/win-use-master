@@ -18,7 +18,8 @@
 //   node cdp.js <port> text  <target> '<选择器>' '<文本>' [--receipt <路径>] # 给输入框写值并派发 input/change
 //   node cdp.js <port> mouse <target> '<选择器>' [--receipt <路径>]       # 渲染器级真实鼠标点击，之后打印 DOM 差分
 //   node cdp.js <port> insert <target> '<选择器或空>' '<文本>' [--receipt <路径>] # Input.insertText（输入法上屏）
-//   node cdp.js <port> press <target> <Enter|Escape|Backspace|Slash|At> [选择器] [--receipt <路径>]
+//   node cdp.js <port> press <target> <Enter|Escape|Backspace|SelectAll|Slash|At> [选择器] [--receipt <路径>]
+//                                                        # SelectAll=Ctrl+A，配 Backspace 可撤回刚 insert 的内容
 //   node cdp.js <port> shot  <target> <输出路径> [选择器]  # 整页或单元素截图
 //   node cdp.js <port> html  <target> [选择器]           # 打印 outerHTML（默认 body，截断 20000 字）
 //   node cdp.js <port> act   <target> <脚本文件|内联脚本|-> [--receipt <路径>] # 一次会话顺序执行多步（见下）
@@ -237,8 +238,12 @@ const COLLECT_JS = `(function(opts){
       testId ? '#' + norm(testId) : ''];
     const text = parts.find(Boolean) || '';
     const disabled = !!(el.disabled || el.getAttribute('aria-disabled') === 'true');
+    // Anything that holds user-typed text. Slate/ProseMirror editors carry
+    // role=textbox, which makes kind "div/textbox" rather than "div/editable",
+    // so the flag must not be derived from kind alone.
+    const editable = !!(el.isContentEditable || tag === 'input' || tag === 'textarea' || role === 'textbox' || role === 'searchbox');
     out.push({ ref, kind, text: text.slice(0, 40), match: parts.join(' ').toLowerCase().replace(/\\s+/g, '').slice(0, 300),
-      x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height), disabled, visible });
+      x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height), disabled, visible, editable });
   }
   window.__hsRefCounter = counter;
   return out;
@@ -251,7 +256,7 @@ async function collect(sess, opts = {}) {
 const fmtEl = e =>
   `ref=${e.ref} ${e.kind} "${e.text}" [${e.x},${e.y} ${e.w}×${e.h}]` + (e.disabled ? ' [disabled]' : '') + (e.visible ? '' : ' [hidden]');
 
-const hasSensitiveValue = e => /^(?:input|textarea)(?:\/|$)|\/editable$/.test(e.kind);
+const hasSensitiveValue = e => !!e.editable || /^(?:input|textarea)(?:\/|$)|\/editable$/.test(e.kind);
 const fmtDiffEl = e => hasSensitiveValue(e)
   ? `ref=${e.ref} ${e.kind} "<${String(e.text || '').length} chars>" [${e.x},${e.y} ${e.w}×${e.h}]` + (e.disabled ? ' [disabled]' : '') + (e.visible ? '' : ' [hidden]')
   : fmtEl(e);
@@ -411,6 +416,10 @@ async function doPress(sess, key, sel) {
     Backspace: { windowsVirtualKeyCode: 8, key: 'Backspace', code: 'Backspace' },
     Slash: { windowsVirtualKeyCode: 191, key: '/', code: 'Slash', text: '/' },
     At: { windowsVirtualKeyCode: 50, key: '@', code: 'Digit2', text: '@', modifiers: 8 },
+    // Ctrl+A inside a focused editing host selects only that editor's content;
+    // followed by Backspace it is the honest way to revert an insert through the
+    // same editing pipeline (Slate/ProseMirror state stays consistent).
+    SelectAll: { windowsVirtualKeyCode: 65, key: 'a', code: 'KeyA', modifiers: 2 },
   };
   const k = map[key];
   if (!k) throw new Error('未知按键: ' + key + '（可用: ' + Object.keys(map).join('/') + '）');

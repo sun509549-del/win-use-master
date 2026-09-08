@@ -193,7 +193,9 @@ function Test-JunkWindow($Window) {
 function Format-Hwnd([long] $Hwnd) { return ('0x{0:X}' -f $Hwnd) }
 
 function Format-Window($Window) {
-    $state = if ($Window.Iconic) { 'min' } elseif ($Window.Cloaked) { 'other-desktop/cloaked' } else { 'current' }
+    # Hidden windows (tray state, not-yet-shown editors, background dialogs) are
+    # only listed with --all; calling them "current" would invite shot/screen/L2.
+    $state = if ($Window.Iconic) { 'min' } elseif ($Window.Cloaked) { 'other-desktop/cloaked' } elseif (-not $Window.Visible) { 'hidden' } else { 'current' }
     $title = ([string]$Window.Title).Replace('"', '\"')
     return ('id={0} pid={1} owner="{2}" state={3} rect={4},{5} {6}x{7} class="{8}" title="{9}"' -f
         (Format-Hwnd $Window.Hwnd), $Window.Pid, $Window.Owner, $state,
@@ -416,6 +418,9 @@ function Invoke-BackgroundShot($Window, [string] $Path, [switch] $NoReceipt, [sw
 function Get-BlankFrameHint($Result, $Window, $Elements = $null) {
     $cdpRoute = if ($null -ne $Result.CdpPort) { "已发现目标 CDP 端口 $($Result.CdpPort)：node `"$PSScriptRoot\cdp.js`" $($Result.CdpPort) shot auto <路径>。" } else { '' }
     $frame = $Result.FrameColors
+    if ($null -ne $Window -and -not $Window.Visible -and -not $Window.Iconic) {
+        return "effect=unverifiable ⚠️ 目标窗口当前不可见（未显示/托盘态，state=hidden），PrintWindow 返回空帧是预期，不是渲染拒绝。请用户显示该窗口后再截；${cdpRoute}借前台的 shotfg 对隐藏窗口同样无效。"
+    }
     if ($null -eq $frame -or $frame -lt 6) {
         return "effect=unverifiable ⚠️ 整帧接近纯色（内容区 $($Result.Colors) 桶，整帧 $frame 桶）：应用可能拒绝后台渲染，也可能窗口本来就是空白。${cdpRoute}可改 shotfg；Chromium 系先用 probe 查 CDP。$(Get-ScreenCrossCheckHint $Window)"
     }
@@ -762,7 +767,7 @@ function Test-ShellWindow($Window) {
 function Get-GatePreview($Window, $Point) {
     $self = [HuWin]::SelfIntegrity(); $target = [HuWin]::IntegrityLevel([uint32]$Window.Pid)
     $uipi = if ($self -eq 0 -or $target -eq 0) { "BLOCK(unknown self=$self target=$target)" } elseif ($self -lt $target) { "BLOCK(self=$self target=$target)" } else { "pass(self=$self target=$target)" }
-    $desktop = if ($Window.Cloaked) { 'BLOCK(other-desktop/cloaked)' } elseif ($Window.Iconic) { 'BLOCK(minimized)' } else { 'pass' }
+    $desktop = if ($Window.Cloaked) { 'BLOCK(other-desktop/cloaked)' } elseif ($Window.Iconic) { 'BLOCK(minimized)' } elseif (-not $Window.Visible) { 'BLOCK(hidden)' } else { 'pass' }
     $idle = [HuWin]::UserIdleSeconds()
     $presence = if ($idle -ge $script:IdleThresholdSeconds) { "pass(idle=$([Math]::Round($idle,1))s)" } else { "WAIT(idle=$([Math]::Round($idle,1))s)" }
     $pointText = if ($null -ne $Point) { " point=$($Point.ScreenX),$($Point.ScreenY)" } else { '' }
@@ -784,6 +789,9 @@ function Invoke-WithBorrowedFocus($Window, [scriptblock] $Action, [switch] $Keep
     if ([HuWin]::ScreenLocked()) { Stop-Hu 'refused: 当前是锁屏/安全桌面，不能发送输入。' 2 }
     if ($Window.Iconic) { Stop-Hu 'refused: 目标窗口已最小化。先由用户恢复窗口，或改走 CDP/UIA。' 2 }
     if ($Window.Cloaked) { Stop-Hu 'refused: 目标窗口在其它虚拟桌面或被 DWM cloaked。坐标输入可能切桌面；改走 CDP/UIA，或请用户把窗口移来。--force 也不会自动切桌面。' 2 }
+    # Activating a hidden window would ShowWindow it: that changes what the user
+    # sees on their behalf, the same class of side effect as switching desktops.
+    if (-not $Window.Visible) { Stop-Hu 'refused: 目标窗口当前不可见（未显示/托盘态）。坐标输入必须先把它显示出来，这会改变用户可见状态；请用户自己打开窗口，或改走 CDP/UIA。--force 不绕过。' 2 }
     $selfLevel = [HuWin]::SelfIntegrity(); $targetLevel = [HuWin]::IntegrityLevel([uint32]$Window.Pid)
     if (-not $selfLevel -or -not $targetLevel) {
         Stop-Hu "refused: 无法确认 UIPI 完整性级别（self=$selfLevel target=$targetLevel）。未知不等于安全；改走 CDP/UIA。--force 也不绕过。" 2
@@ -1150,6 +1158,9 @@ switch ($Command.ToLowerInvariant()) {
             Write-Output "截图: $($first.Path)；后台直接截到，未动焦点。receipt=$($first.Sidecar)"
             break
         }
+        # A hidden window has no surface to refresh; activating it would ShowWindow
+        # on the user's behalf, which the focus gate refuses anyway.
+        if (-not $w.Visible) { Stop-Hu (Get-BlankFrameHint $first $w) 2 }
         # Borrowing focus cannot add content to an empty editor. When the frame
         # rendered and UIA reads an empty Document/Edit with no non-empty sibling,
         # the uniform interior is the app's real state; keep the background image.

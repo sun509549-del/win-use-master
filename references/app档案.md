@@ -313,9 +313,9 @@ L3_capture: 未测
   - New-Object -ComObject Excel.Application 不是“连接当前窗口”；在用户已打开工作簿时尤其危险。
 ```
 
-### WorkBuddy AI · 5.4.2 · 只读窗口实测 2026-09-08
+### WorkBuddy AI · 5.4.2 · CDP 可逆写实测 2026-09-08
 
-> `open --background` 启动后只做 probe / shot / see / uia / screen。**未输入、未发送、未 `--relaunch`、未开 CDP。** 截图留在本机临时目录，不入库。
+> 第三个可重放档案，也是第一个 Chromium/CDP 写档案：`tests/workbuddy-cdp-profile.ps1`。用户授权后，在 app **未运行**时以 `open <exe> --cdp 9333 --background` 全新启动（无需 `--relaunch`），CDP 端口归属校验通过、前台未被打扰。写路径全程零焦点：`insert` 进 Slate 输入区 → 发送键 `disabled→enabled` → `press SelectAll` + `press Backspace` 撤回 → 发送键回到 `disabled`。**未按 Enter、未点发送、未碰「重启升级」。** 快照含用户会话标题与账号，只留本机，不入库。
 
 ```yaml
 显示名: WorkBuddy AI
@@ -339,40 +339,55 @@ exe: D:\ruanjian\WorkBuddyAI\WorkBuddyAI.exe  # 核对 2026-09-08；对外文档
 L0:
   CLI: 未测
   URL protocol: workbuddy-ai:// → WorkBuddyAI.exe "%1"；未调用
-  本地端口: 127.0.0.1 上多个监听，对本机 /json/version 均 HTTP 404，不是 CDP
-  CDP: 命令行无 --remote-debugging-port。Electron 静态信号明确。未授权 `--relaunch`，本轮无 CDP
+  本地端口: 默认启动时 127.0.0.1 上多个监听，对 /json/version 均 HTTP 404，不是 CDP
+  CDP: 默认关闭；`--remote-debugging-port=<port>` 被接受。`open <exe> --cdp 9333 --background` → 端口归属新实例、foreground=kept
+  CDP target: 只有一个 page，url 为 file:///…/resources/app.asar/renderer/index.html（带 query，含账号参数；收据已去 query，`list` 原文不要贴进文档）。没有独立 iframe target（与 Mac 档案的 page+iframe 结构不同）
   COM: 无
-  启动/重启风险: 普通 open 会进用户会话；托盘进程 CloseMainWindow 后仍可能残留
+  启动/重启风险: app 未运行时直接带端口启动即可；运行中需 `--relaunch`，会关掉用户会话；托盘态 CloseMainWindow 关不掉
+
+L0_CDP_写路径:
+  输入区定位: `[data-slate-editor="true"]`（div role=textbox，Slate；class 是哈希 CSS module，不能存）
+  空态判据: 输入区内有 `[data-slate-placeholder]`；发送键 `button "发送"` 为 [disabled]
+  写: `insert '[data-slate-editor="true"]' "<文本>"` → 输入区 text 变、发送键 disabled true→false、多出「增强提示词」按钮（两个状态指示器）
+  撤回: `press SelectAll` + `press Backspace`（真实键事件，Slate state 一致）→ 占位符回来、发送键 false→true、「增强提示词」消失
+  收据: action-receipt-v1，输入只记长度，target url 去 query；act 6 步 events=3，insert/Backspace 均 effect=partial，SelectAll 为 suspected_noop（选区不进交互树，属预期）
+  其它元素: 模型选择 button/combobox；工作空间/权限 combobox；窗口控制按钮的可见文本是 i18n key（menu.minimize / window.maximize / common.close）；本构建顶部有「更新日志」「重启升级」
 
 L1_UIA:
   总体: 不可用（主窗口）
   树: probe 统计 Pane=2 Window=1，可编辑/可操作 0
   see/uia: 0 个可操作元素；uiaread 无 Text/Edit
-  暗拒: 不要在空树上 uiaset
+  暗拒: 不要在空树上 uiaset；有 CDP 就不需要 L1
 
-L2_SendInput: 未测（无必要的可逆写目标，且会看到用户会话）
+L2_SendInput: 未测；有 CDP 不降级
 
 L3_capture:
-  PrintWindow_后台: 主窗口首次 1815x1203、颜色桶 67，与窗口 1:1
-  screen_合成: 同几何 1815x1203、颜色桶 67，遮挡采样 5/5 命中目标
-  see 降采样: 随后一张收据 colorBuckets=1（暗色 UI 或瞬时空帧）；不能单次判黑
-  CDP_shot: 无端口
+  PrintWindow_后台: 主窗口 1815x1203、颜色桶 67，与窗口 1:1
+  screen_合成: 同几何、颜色桶 67，遮挡采样 5/5 命中目标
+  see 降采样: 曾有一张收据 colorBuckets=1（暗色 UI 或瞬时空帧）；不能单次判黑
+  CDP_shot: 可用，198KB 整页；不含原生标题栏
   壳窗口/渲染窗口: 主窗 WidgetWin_1 可直接 PrintWindow，未走 sibling
 
 验证:
-  本轮最强证据: 窗口类 + 后台截图有内容 + 本地端口非 CDP + UIA 空树
-  未验证: 输入框写入、发送键、CDP insert
+  输入生效: 发送键 disabled→enabled + 输入区 text 长度变化（终端只显示字符数）
+  撤回生效: 占位符回来 + 发送键回到 disabled
+  最终副作用: 本档案不发送，不产生会话
 
 安全:
-  风险类别: 办公客户端
-  停手点: 发送、分享、删除会话
-  敏感像素: 侧栏会话、账号、本地项目路径；证据不入库
+  风险类别: 办公 AI 客户端
+  停手点: 发送（按钮与 Enter）、分享、删除会话、「重启升级」、上传（系统文件框，CDP 够不着）
+  敏感像素/文本: 侧栏会话标题、账号邮箱、target url 的 query；snapshot 输出与截图不入库
+  草稿保护: 输入区无占位符 = 用户有草稿，档案回归拒绝写入
 
 已知坑:
   - 开始菜单 “WorkBuddy AI” vs exe WorkBuddyAI；不要启动 updater。
   - 有本地端口 ≠ CDP。
   - `win.ps1 see --out` 经 `pwsh -File` 时 `--out` 被宿主当成二义公共参数前缀（-OutVariable/-OutBuffer）→ 2026-09-08 已编码：`see <target> <path>` 位置参数；`--out` 只在进程内 `&` 调用可用。
+  - role=textbox 的 contenteditable 在终端差分里原本按普通元素打印全文 → 2026-09-08 已编码：采集时标记 editable，差分只显示字符数；回归里用 role=textbox fixture 守住。
+  - `text`（el.textContent=）对 Slate 不可信，Mac 档案已记；Windows 直接用 `insert` + 键事件撤回，未走 `text`。
 ```
+
+可复现路径 `tests/workbuddy-cdp-profile.ps1 [-Port 9333]`：前置是用户已用 `open <exe> --cdp <port> --background` 启动授权实例；测试只校验端口归属、输入区为空、发送键 disabled，然后跑上面的 act 配方并核对收据与脱敏。它不启动、不重启、不关闭 app；无实例或有草稿时退出 2。
 
 ### 剪映专业版 · 10.4.0.13957 · 启动器 + 环境检测弹窗 2026-09-08
 
@@ -414,23 +429,33 @@ L1_UIA:
 L2_SendInput: 未测
 
 L3_capture:
-  PrintWindow_后台: 弹窗 615x462、颜色桶 66，内容完整
+  PrintWindow_后台: 环境检测弹窗 615x462、颜色桶 66，内容完整
   screen_合成: 同几何颜色桶 71，但遮挡采样 5/5 落在其它窗口（本机是 QQ）；合成图不能当弹窗内容
-  与 Mac 档案对照: “主窗能后台截、更新弹窗截不到”在本轮不成立——弹窗 PrintWindow 能截到，合成图却被遮挡。不能抄 Mac 结论。
-  编辑器主窗: 未出现，未测
+  与 Mac 档案对照: “主窗能后台截、更新弹窗截不到”——可见的环境检测弹窗 PrintWindow 能截到；隐藏态下主窗与更新弹窗都截不到（见下）。两轮都不支持照抄 Mac 结论
+  编辑器主窗（隐藏态）: 见 2026-09-08 第二次观察
+
+2026-09-08 第二次观察（编辑器进程已起、全部窗口隐藏）:
+  进程: 版本目录 JianyingPro.exe 主进程 + gpu-process/renderer/utility 子进程（CEF 已起）
+  窗口: 主窗 Qt622QWindowIcon title=JianyingPro 1558x1255、「版本更新」Qt 弹窗 507x519、CEF Chrome_WidgetWin_0 1920x1117 无标题、一个 528x237 的 JianyingPro 小窗——全部 visible=False；只有 237x39 的「剪映专业版」是最小化态
+  PrintWindow: 四个隐藏窗口全部整帧 1 桶（没渲染，不是拒绝渲染）；`shot` 现在会直接说明“窗口不可见”
+  screen: 对不可见窗口正确拒绝
+  UIA: 四个隐藏窗口全部 0 元素；probe 统计 Window=1
+  L2: 隐藏窗口被闸拒绝（BLOCK(hidden)）；显示它属于替用户改状态，交还用户
+  CDP: 命令行无 remote-debugging-port；CEF 是否接受该参数未测（需用户授权重启剪映）
 
 验证:
-  本轮最强证据: 启动器 ≠ 编辑器；环境检测是独立 Qt 进程；PrintWindow vs screen 对弹窗结论相反
-  未验证: 时间线、导出、CEF 主画布截图、CDP
+  本轮最强证据: 启动器 ≠ 编辑器；环境检测是独立 Qt 进程；隐藏态下截图/UIA 全部为空是窗口状态问题，不是能力结论
+  未验证: 可见编辑器的 PrintWindow/UIA、时间线、导出、CDP
 
 安全:
   风险类别: 媒体工程
-  停手点: 导出、发布、删除草稿、覆盖工程、点检测弹窗的确定（可能继续启动/更新）
+  停手点: 导出、发布、删除草稿、覆盖工程、点检测弹窗的确定、「版本更新」弹窗的任何按钮
 
 已知坑:
   - 根目录启动器与 `10.4.0.13957\JianyingPro.exe` 不是同一个文件。
   - `open --background` 成功只保证启动器进程起来，不保证编辑器窗口。
   - 弹窗 UIA 的「确定」是高风险默认按钮，先读完整文案。
+  - `windows --all` 里的隐藏窗口过去也显示 state=current → 2026-09-08 已编码为 state=hidden，`shot` 空帧时直说不可见，L2/shotfg 拒绝。
 ```
 
 ### Blender · 本机未安装 · 2026-09-08

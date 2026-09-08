@@ -20,6 +20,9 @@ $profile = Join-Path $tempRoot 'edge-profile'
 [IO.Directory]::CreateDirectory($profile) | Out-Null
 $receipts = @{
     Text = Join-Path $tempRoot 'text.json'
+    Insert = Join-Path $tempRoot 'insert.json'
+    SelectAll = Join-Path $tempRoot 'selectall.json'
+    Revert = Join-Path $tempRoot 'revert.json'
     Click = Join-Path $tempRoot 'click.json'
     Press = Join-Path $tempRoot 'press.json'
     Act = Join-Path $tempRoot 'act.json'
@@ -51,7 +54,9 @@ try {
     }
     Write-Output "edge-ready: $([Math]::Round($readyClock.Elapsed.TotalSeconds,1))s port=$port"
 
-    $setupJs = "document.body.innerHTML='<input id=i value=abc><button id=b onclick=`"this.disabled=true`">Go</button><button id=b2 onclick=`"this.remove()`">Gone</button>'; 'ready'"
+    # #ce mimics Slate/ProseMirror composers: a contenteditable div with
+    # role=textbox, whose collected kind is div/textbox rather than div/editable.
+    $setupJs = "document.body.innerHTML='<input id=i value=abc><button id=b onclick=`"this.disabled=true`">Go</button><button id=b2 onclick=`"this.remove()`">Gone</button><div id=ce role=textbox contenteditable=true>seed</div>'; 'ready'"
     $setup = @(& $node $cdp $port eval auto $setupJs 2>&1)
     if ($LASTEXITCODE -ne 0 -or (($setup | Out-String) -notmatch 'ready')) { throw "fixture 初始化失败：$($setup -join ' ')" }
 
@@ -65,6 +70,25 @@ try {
         $textReceipt.verification.effect -ne 'partial' -or $textRaw.Contains($secret) -or $textRaw.Contains('#i')) {
         throw 'text 收据字段、effect 或脱敏不符合约定。'
     }
+
+    $editorSecret = 'private-draft-text'
+    $insertOut = @(& $node $cdp $port insert auto '#ce' $editorSecret --receipt $receipts.Insert 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "insert 失败：$($insertOut -join ' ')" }
+    $insertText = $insertOut | Out-String
+    $insertReceipt = Get-Content -LiteralPath $receipts.Insert -Raw | ConvertFrom-Json
+    if ($insertText.Contains($editorSecret) -or $insertText -notmatch '~ ref=e\d+ div/textbox text <\d+ chars>→<\d+ chars>' -or
+        $insertReceipt.action.textLength -ne $editorSecret.Length -or (Get-Content -LiteralPath $receipts.Insert -Raw).Contains($editorSecret)) {
+        throw "role=textbox 编辑器的终端差分或收据泄露了输入正文：$($insertOut -join ' | ')"
+    }
+    $selectAllOut = @(& $node $cdp $port press auto SelectAll '#ce' --receipt $receipts.SelectAll 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "press SelectAll 失败：$($selectAllOut -join ' ')" }
+    $revertOut = @(& $node $cdp $port press auto Backspace '#ce' --receipt $receipts.Revert 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "press Backspace 失败：$($revertOut -join ' ')" }
+    # A plain contenteditable keeps a placeholder <br> after deleting everything, so
+    # measure the remaining text rather than innerText/childNodes.
+    $editorLeft = & $node $cdp $port eval auto "document.getElementById('ce').textContent.trim().length" 2>&1
+    if ([string]($editorLeft | Select-Object -Last 1) -ne '0') { throw "SelectAll+Backspace 没有清空 role=textbox 编辑器：剩余 $editorLeft" }
+    Write-Output 'editor-redaction+revert: role=textbox insert redacted, SelectAll+Backspace cleared PASS'
 
     $clickOut = @(& $node $cdp $port click auto '#b' --receipt $receipts.Click 2>&1)
     if ($LASTEXITCODE -ne 0) { throw "click 失败：$($clickOut -join ' ')" }

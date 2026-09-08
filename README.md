@@ -108,7 +108,7 @@ node "$SKILL_DIR/scripts/cdp.js" 9333 find auto "发送" --role button
 node "$SKILL_DIR/scripts/cdp.js" 9333 insert auto '#prompt' "文本" --receipt .\evidence\insert.json
 ```
 
-CDP 可在窗口被遮挡时读写渲染页面，也能避免抢焦点。但它只覆盖对应渲染 target：系统文件选择框、UAC、原生菜单和另一个进程的 UI 不在里面。`click`、`text`、`mouse`、`insert`、`press`、`act` 都会生成 `action-receipt-v1`；不指定 `--receipt` 时落到系统临时目录。收据保存目标身份、脱敏动作参数、前后可交互 DOM 摘要哈希和 `effect`，不保存输入正文或原始 CSS。输入控件的终端差分也只显示长度。HTTP 探测和 WebSocket 连接各限 5 秒，单次 CDP 请求限 6 秒，`act` 最多 200 步/120 秒；修改请求超时按“可能已发生”写 `effect=unknown`、退出 2，不能自动重试。
+CDP 可在窗口被遮挡时读写渲染页面，也能避免抢焦点。但它只覆盖对应渲染 target：系统文件选择框、UAC、原生菜单和另一个进程的 UI 不在里面。`click`、`text`、`mouse`、`insert`、`press`、`act` 都会生成 `action-receipt-v1`；不指定 `--receipt` 时落到系统临时目录。收据保存目标身份、脱敏动作参数、前后可交互 DOM 摘要哈希和 `effect`，不保存输入正文或原始 CSS。输入控件（含 `role=textbox` 的 Slate/ProseMirror 编辑器）的终端差分也只显示长度。撤回刚 `insert` 的内容用 `press SelectAll` 加 `press Backspace`：两者都是真实键事件，编辑器 state 与 DOM 一起回退，`text`（直接改 `textContent`）做不到这一点。HTTP 探测和 WebSocket 连接各限 5 秒，单次 CDP 请求限 6 秒，`act` 最多 200 步/120 秒；修改请求超时按“可能已发生”写 `effect=unknown`、退出 2，不能自动重试。
 
 若必须用 `open --cdp` 给已运行 app 加调试端口，`--relaunch` 会请求 app 正常退出；这可能遇到保存确认框或丢未保存状态。工具不会强杀，操作前必须让用户知情。
 
@@ -180,6 +180,7 @@ Windows `SendInput` 是全局输入流，不携带目标 PID/HWND。工具会短
 - **UIPI**：普通权限无法可靠输入管理员窗口；自身或目标完整性读不到也按不安全拒绝，`--force` 绕不过。
 - **锁屏/UAC 安全桌面**：拒绝输入和不可信截图，不模拟同意。
 - **虚拟桌面**：目标 `cloaked` 时拒绝坐标写，不自动发送快捷键切桌面。
+- **隐藏窗口**：`windows --all` 把未显示的窗口标成 `state=hidden`（托盘态、尚未显示的编辑器、后台弹窗）。它们 `PrintWindow` 只有空帧，`screen` 拒绝，坐标写也拒绝——激活它等于替用户把窗口弹出来。
 - **遮挡**：落点最上层不是目标窗口就拒绝。
 - **HUD**：借前台时给用户可见提示，鼠标穿透；排除截图是 best effort，证据仍需抽查。
 
@@ -241,6 +242,7 @@ node "$SKILL_DIR/scripts/cdp.js" <port> snapshot <target> [--all]
 node "$SKILL_DIR/scripts/cdp.js" <port> find <target> <文本> [--role button] [--all]
 node "$SKILL_DIR/scripts/cdp.js" <port> wait <target> <css|text:文本|gone:css> [秒]
 node "$SKILL_DIR/scripts/cdp.js" <port> mouse|insert|press|click|text|act ... [--receipt <path>]
+node "$SKILL_DIR/scripts/cdp.js" <port> press <target> <Enter|Escape|Backspace|SelectAll|Slash|At> [选择器]
 node "$SKILL_DIR/scripts/cdp.js" <port> shot|eval ...
 ```
 
@@ -298,6 +300,7 @@ win-use-master/
 │   ├── uia-timeout.ps1   # UIA worker 挂起、终止与 unknown 收据回归
 │   ├── calculator-profile.ps1 # 可选：真实 Windows 计算器档案回归
 │   ├── notepad-profile.ps1 # 可选：真实记事本 11 Document 可逆写档案回归
+│   ├── workbuddy-cdp-profile.ps1 # 可选：用户授权的 WorkBuddy CDP 实例上做零焦点可逆写
 │   ├── fixture.ps1       # 只在本机打开的受控 WinForms 测试窗
 │   └── smoke.ps1         # 编译、截图、UIA、闸门与输入回归
 └── references/
@@ -325,9 +328,11 @@ pwsh -NoProfile -File "$SKILL_DIR\tests\uia-timeout.ps1"
 # 可选真实 app 测试：仅在计算器 / 记事本原本未打开时运行
 pwsh -NoProfile -File "$SKILL_DIR\tests\calculator-profile.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\notepad-profile.ps1"
+# 可选 Chromium/CDP 档案：需用户先 open <WorkBuddyAI.exe> --cdp 9333 --background 授权实例；测试不启停 app
+pwsh -NoProfile -File "$SKILL_DIR\tests\workbuddy-cdp-profile.ps1" -Port 9333
 ```
 
-首个烟测会打开一个无外部副作用的本地 WinForms 测试窗，依次验证编译、只读 probe 的 PID 限定、后台截图与收据、`see`/UIA map、隔离 UIA worker、`uiaread` 静态文本与动作副作用回读、`ValuePattern`、`InvokePattern`、动作上限和安全闸预演，并在用户已空闲时验证短暂借前台的坐标输入、真实焦点占用时长与自身输入尾迹排除；用户正操作电脑时默认明确跳过 L2。发布前用 `-RequireCoordinate` 要求 L2 必须通过，它需要活动交互桌面且运行期间不要操作键鼠。若 Windows Foreground Lock 拒绝切前台，退出码 `2` 是安全拒绝，不应强行绕过。CDP owner 测试使用隐藏 HTTP fixture 验证错实例端口拒绝；动作收据测试使用本工具自己启动的临时无头 Edge，验证真实 `text/click/press/act`、脱敏、确定失败和请求/脚本截止时间的 `unknown`，随后只清理该测试 profile 对应进程；截图恢复测试使用两个同进程同位置窗口验证壳/渲染 sibling 选择与收据；UIA 超时测试确定性挂起 worker，验证父进程会终止它并把写结果标成 unknown。计算器测试是可选的机器档案回归：拒绝复用已打开的计算器，验证 AUMID 启动、UWP 宿主窗口、中文 UIA、`1+2=3` 回读，最后恢复 0 并正常关闭。记事本测试同样可选：拒绝复用运行中的记事本，也拒绝向恢复出的会话写入；验证 `see` 位置参数路径、空白文档的截图诊断、Document `ValuePattern` 写入与状态栏字符数、标签“已修改/未修改”两种指示器回读，再清空并关闭——记事本 11 关闭已修改标签不会提示而是留到下次会话，所以失败路径也会先清空。
+首个烟测会打开一个无外部副作用的本地 WinForms 测试窗，依次验证编译、只读 probe 的 PID 限定、后台截图与收据、`see`/UIA map、隔离 UIA worker、`uiaread` 静态文本与动作副作用回读、`ValuePattern`、`InvokePattern`、动作上限和安全闸预演，并在用户已空闲时验证短暂借前台的坐标输入、真实焦点占用时长与自身输入尾迹排除；用户正操作电脑时默认明确跳过 L2。发布前用 `-RequireCoordinate` 要求 L2 必须通过，它需要活动交互桌面且运行期间不要操作键鼠。若 Windows Foreground Lock 拒绝切前台，退出码 `2` 是安全拒绝，不应强行绕过。CDP owner 测试使用隐藏 HTTP fixture 验证错实例端口拒绝；动作收据测试使用本工具自己启动的临时无头 Edge，验证真实 `text/click/press/act`、脱敏、确定失败和请求/脚本截止时间的 `unknown`，随后只清理该测试 profile 对应进程；截图恢复测试使用两个同进程同位置窗口验证壳/渲染 sibling 选择与收据；UIA 超时测试确定性挂起 worker，验证父进程会终止它并把写结果标成 unknown。计算器测试是可选的机器档案回归：拒绝复用已打开的计算器，验证 AUMID 启动、UWP 宿主窗口、中文 UIA、`1+2=3` 回读，最后恢复 0 并正常关闭。记事本测试同样可选：拒绝复用运行中的记事本，也拒绝向恢复出的会话写入；验证 `see` 位置参数路径、空白文档的截图诊断、Document `ValuePattern` 写入与状态栏字符数、标签“已修改/未修改”两种指示器回读，再清空并关闭——记事本 11 关闭已修改标签不会提示而是留到下次会话，所以失败路径也会先清空。WorkBuddy 测试是唯一的真实 Chromium 写档案：它不启动、不重启、不关闭 app，只在用户已用 `--cdp` 启动授权实例、端口归属校验通过、输入区没有草稿时运行；`insert` 后要求发送键由禁用变可用，`SelectAll`+`Backspace` 撤回后要求发送键回到禁用、占位符重现，收据与终端差分都不得含输入正文。它从不按 Enter 或点发送。
 
 ## 许可证
 

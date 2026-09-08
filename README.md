@@ -10,6 +10,8 @@
 
 **让 coding agent 操控没有 API 的 Windows 桌面 app，并把关键步骤留成可复现的取证。**
 
+本项目是 [huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use) 设计理念的 Windows 平台实现；保留上游 MIT 许可证与原作者署名，并针对 UI Automation、UIPI、DWM、`SendInput` 和 Windows 虚拟桌面重新设计实现。
+
 [快速开始](#快速开始) · [四层控制面](#四层控制面) · [安全模型](#安全模型) · [命令表](#命令表) · [能力边界](#能力边界) · [English](#english)
 
 </div>

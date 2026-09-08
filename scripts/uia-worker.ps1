@@ -1,0 +1,226 @@
+# Isolated Windows UI Automation worker.
+#
+# The parent sends one JSON request through stdin and enforces the deadline by
+# terminating this process.  Keeping request data off the command line avoids
+# exposing text passed to ValuePattern in process listings.
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2.0
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+
+function Complete-Worker($Payload, [int] $Code = 0) {
+    [Console]::Out.WriteLine(($Payload | ConvertTo-Json -Depth 10 -Compress))
+    exit $Code
+}
+
+function Public-Element($Item) {
+    return [ordered]@{
+        ref = $Item.Ref; name = $Item.Name; controlType = $Item.ControlType
+        automationId = $Item.AutomationId; className = $Item.ClassName
+        value = $Item.Value; x = $Item.X; y = $Item.Y
+        width = $Item.Width; height = $Item.Height; cx = $Item.Cx; cy = $Item.Cy
+        enabled = $Item.Enabled; offscreen = $Item.Offscreen
+        isPassword = $Item.IsPassword; patterns = @($Item.Patterns)
+    }
+}
+
+function Get-PatternNames($Element) {
+    return @($Element.GetSupportedPatterns() | ForEach-Object {
+        $_.ProgrammaticName -replace 'PatternIdentifiers\.Pattern$', 'Pattern'
+    })
+}
+
+function Get-ActionElements($Root, $Bounds, [int] $Limit) {
+    $types = @(
+        [Windows.Automation.ControlType]::Button,
+        [Windows.Automation.ControlType]::Edit,
+        [Windows.Automation.ControlType]::CheckBox,
+        [Windows.Automation.ControlType]::RadioButton,
+        [Windows.Automation.ControlType]::ComboBox,
+        [Windows.Automation.ControlType]::Hyperlink,
+        [Windows.Automation.ControlType]::ListItem,
+        [Windows.Automation.ControlType]::MenuItem,
+        [Windows.Automation.ControlType]::TabItem,
+        [Windows.Automation.ControlType]::Slider,
+        [Windows.Automation.ControlType]::TreeItem,
+        [Windows.Automation.ControlType]::DataItem
+    )
+    $conditions = [Collections.Generic.List[Windows.Automation.Condition]]::new()
+    foreach ($type in $types) {
+        $conditions.Add([Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, $type))
+    }
+    $found = $Root.FindAll([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.OrCondition]::new($conditions.ToArray()))
+    $out = [Collections.Generic.List[object]]::new()
+    $ref = 0
+    for ($i = 0; $i -lt $found.Count -and $out.Count -lt $Limit; $i++) {
+        $element = $found.Item($i)
+        try {
+            $current = $element.Current
+            $rect = $current.BoundingRectangle
+            if ($rect.IsEmpty -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
+            if ($rect.Right -lt [double]$Bounds.l -or $rect.Left -gt [double]$Bounds.r -or
+                $rect.Bottom -lt [double]$Bounds.t -or $rect.Top -gt [double]$Bounds.b) { continue }
+            $ref++
+            $isPassword = [bool]$current.IsPassword
+            $value = ''
+            if (-not $isPassword) {
+                $pattern = $null
+                if ($element.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+                    $value = [string]$pattern.Current.Value
+                } elseif ($element.TryGetCurrentPattern([Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
+                    $value = [string]$pattern.DocumentRange.GetText(200)
+                }
+            }
+            if ($value.Length -gt 200) { $value = $value.Substring(0, 200) }
+            $out.Add([pscustomobject]@{
+                Ref = "e$ref"; Name = [string]$current.Name
+                ControlType = ($current.ControlType.ProgrammaticName -replace '^ControlType\.', '')
+                AutomationId = [string]$current.AutomationId; ClassName = [string]$current.ClassName
+                Value = $value
+                X = [Math]::Round($rect.X, 1); Y = [Math]::Round($rect.Y, 1)
+                Width = [Math]::Round($rect.Width, 1); Height = [Math]::Round($rect.Height, 1)
+                Cx = [Math]::Round($rect.X + $rect.Width / 2 - [double]$Bounds.l, 1)
+                Cy = [Math]::Round($rect.Y + $rect.Height / 2 - [double]$Bounds.t, 1)
+                Enabled = [bool]$current.IsEnabled; Offscreen = [bool]$current.IsOffscreen
+                IsPassword = $isPassword; Patterns = @(Get-PatternNames $element)
+                Element = $element
+            })
+        } catch { continue }
+    }
+    return @($out)
+}
+
+function Get-ReadableElements($Root, [int] $Limit) {
+    $types = @(
+        [Windows.Automation.ControlType]::Text,
+        [Windows.Automation.ControlType]::Document,
+        [Windows.Automation.ControlType]::Edit,
+        [Windows.Automation.ControlType]::StatusBar,
+        [Windows.Automation.ControlType]::Header,
+        [Windows.Automation.ControlType]::HeaderItem
+    )
+    $conditions = [Collections.Generic.List[Windows.Automation.Condition]]::new()
+    foreach ($type in $types) {
+        $conditions.Add([Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, $type))
+    }
+    $found = $Root.FindAll([Windows.Automation.TreeScope]::Descendants,
+        [Windows.Automation.OrCondition]::new($conditions.ToArray()))
+    $out = [Collections.Generic.List[object]]::new()
+    for ($i = 0; $i -lt $found.Count -and $out.Count -lt $Limit; $i++) {
+        $element = $found.Item($i)
+        try {
+            $current = $element.Current
+            $isPassword = [bool]$current.IsPassword
+            $value = ''
+            if (-not $isPassword) {
+                $pattern = $null
+                if ($element.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+                    $value = [string]$pattern.Current.Value
+                } elseif ($element.TryGetCurrentPattern([Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
+                    $value = [string]$pattern.DocumentRange.GetText(500)
+                }
+            }
+            $name = [string]$current.Name
+            if (-not $name -and -not $value -and -not $isPassword) { continue }
+            if ($value.Length -gt 500) { $value = $value.Substring(0, 500) }
+            $out.Add([ordered]@{
+                controlType = ($current.ControlType.ProgrammaticName -replace '^ControlType\.', '')
+                name = $name; automationId = [string]$current.AutomationId; value = $value
+                isPassword = $isPassword; offscreen = [bool]$current.IsOffscreen
+            })
+        } catch { continue }
+    }
+    return @($out)
+}
+
+function Resolve-Element($Elements, [string] $Reference, $Spec) {
+    if ($Reference -eq 'first') {
+        return @($Elements | Where-Object ControlType -EQ 'Edit' | Select-Object -First 1)
+    }
+    if ($Reference -notmatch '^e\d+$') { return @() }
+    if ($null -eq $Spec) { return @($Elements | Where-Object Ref -EQ $Reference | Select-Object -First 1) }
+    $candidates = if ([string]$Spec.automationId) {
+        @($Elements | Where-Object AutomationId -EQ ([string]$Spec.automationId))
+    } else {
+        @($Elements | Where-Object { $_.Name -eq [string]$Spec.name -and $_.ControlType -eq [string]$Spec.controlType })
+    }
+    if (-not $candidates.Count) { return @() }
+    return @($candidates | Sort-Object @{ Expression = {
+        [Math]::Pow($_.Cx - [double]$Spec.cx, 2) + [Math]::Pow($_.Cy - [double]$Spec.cy, 2)
+    } } | Select-Object -First 1)
+}
+
+try {
+    Add-Type -AssemblyName UIAutomationClient
+    Add-Type -AssemblyName UIAutomationTypes
+    $raw = [Console]::In.ReadToEnd()
+    if ([string]::IsNullOrWhiteSpace($raw)) { Complete-Worker @{ ok = $false; error = 'empty request' } 1 }
+    $request = $raw | ConvertFrom-Json
+    # Deterministic regression hook. It is inert unless a test process sets the
+    # exact mode name in its inherited environment.
+    if ($env:HUASHU_UIA_WORKER_TEST_HANG -eq [string]$request.mode) {
+        Start-Sleep -Seconds 60
+    }
+    $root = [Windows.Automation.AutomationElement]::FromHandle([IntPtr][long]$request.hwnd)
+    if ($null -eq $root) { Complete-Worker @{ ok = $false; error = 'window UIA root unavailable' } 2 }
+    $mode = [string]$request.mode
+    $limit = if ($request.limit) { [Math]::Max(1, [Math]::Min(500, [int]$request.limit)) } else { 300 }
+
+    if ($mode -eq 'read') {
+        $items = @(Get-ReadableElements $root $limit)
+        Complete-Worker @{ ok = $true; items = $items }
+    }
+
+    $elements = @(Get-ActionElements $root $request.window $limit)
+    if ($mode -eq 'list') {
+        Complete-Worker @{ ok = $true; items = @($elements | ForEach-Object { Public-Element $_ }) }
+    }
+
+    $spec = if ($request.PSObject.Properties.Name -contains 'spec') { $request.spec } else { $null }
+    $selected = @(Resolve-Element $elements ([string]$request.reference) $spec)
+    if (-not $selected.Count) { Complete-Worker @{ ok = $false; refused = $true; error = 'UIA reference no longer resolves uniquely' } 2 }
+    $item = $selected[0]
+    if ($mode -eq 'resolve') { Complete-Worker @{ ok = $true; item = Public-Element $item } }
+
+    if ($mode -eq 'set') {
+        if ($item.IsPassword) { Complete-Worker @{ ok = $false; refused = $true; error = 'password/credential field refused' } 2 }
+        $pattern = $null
+        if (-not $item.Element.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+            Complete-Worker @{ ok = $false; refused = $true; error = 'ValuePattern unavailable' } 2
+        }
+        $before = [string]$pattern.Current.Value
+        $text = [string]$request.text
+        $pattern.SetValue($text)
+        Start-Sleep -Milliseconds 250
+        $afterPattern = $null; $after = ''
+        if ($item.Element.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$afterPattern)) {
+            $after = [string]$afterPattern.Current.Value
+        }
+        Complete-Worker @{
+            ok = $true; item = Public-Element $item; pattern = 'ValuePattern'
+            beforeLength = $before.Length; afterLength = $after.Length
+            changed = ($after -ne $before); matchesRequest = ($after -eq $text)
+        }
+    }
+
+    if ($mode -eq 'invoke') {
+        if ($item.Name -match '(删除|清空|发布|提交|发送|支付|付款|购买|下单|卸载|安装|授权|同意|保存|覆盖|delete|remove|publish|submit|send|post|pay|buy|purchase|uninstall|install|authorize|agree|save|overwrite)') {
+            Complete-Worker @{ ok = $false; refused = $true; error = 'sensitive action name refused' } 2
+        }
+        $pattern = $null; $used = ''
+        if ($item.Element.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) { $pattern.Invoke(); $used = 'InvokePattern' }
+        elseif ($item.Element.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) { $pattern.Toggle(); $used = 'TogglePattern' }
+        elseif ($item.Element.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) { $pattern.Select(); $used = 'SelectionItemPattern' }
+        elseif ($item.Element.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) { $pattern.Expand(); $used = 'ExpandCollapsePattern' }
+        else { Complete-Worker @{ ok = $false; refused = $true; error = 'action pattern unavailable' } 2 }
+        Complete-Worker @{ ok = $true; item = Public-Element $item; pattern = $used }
+    }
+
+    Complete-Worker @{ ok = $false; error = "unknown mode: $mode" } 1
+} catch {
+    Complete-Worker @{ ok = $false; error = $_.Exception.Message } 1
+}

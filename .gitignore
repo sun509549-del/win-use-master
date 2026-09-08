@@ -1,0 +1,15 @@
+# Generated helper assembly
+scripts/HuWin.dll
+scripts/HuWin.*.tmp.dll
+
+# Local skill state and recoverable archives
+.last-update-check
+_archive/
+
+# Windows / editor noise
+Thumbs.db
+Desktop.ini
+*.user
+*.suo
+*.tmp
+*.bak

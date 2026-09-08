@@ -1,0 +1,195 @@
+param(
+    [switch] $KeepEvidence,
+    [switch] $RequireCoordinate
+)
+
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$scripts = Join-Path $root 'scripts'
+$win = Join-Path $scripts 'win.ps1'
+$probe = Join-Path $scripts 'probe.ps1'
+$fixture = Join-Path $PSScriptRoot 'fixture.ps1'
+$evidence = Join-Path ([IO.Path]::GetTempPath()) ("win-use-master-smoke-$([Guid]::NewGuid().ToString('N'))")
+$transientEvidence = [Collections.Generic.List[string]]::new()
+[IO.Directory]::CreateDirectory($evidence) | Out-Null
+
+$scriptFiles = @(
+    (Join-Path $scripts 'build.ps1')
+    (Join-Path $scripts 'win.ps1')
+    (Join-Path $scripts 'uia-worker.ps1')
+    (Join-Path $scripts 'probe.ps1')
+)
+foreach ($file in $scriptFiles) {
+    $tokens = $null; $errors = $null
+    [Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null
+    if ($errors.Count) { throw "$file 有 $($errors.Count) 个 PowerShell 语法错误。" }
+}
+& (Join-Path $scripts 'build.ps1') -Force
+if ($LASTEXITCODE) { throw "build.ps1 exit=$LASTEXITCODE" }
+
+$fixtureProcess = $null
+try {
+    $hostExe = (Get-Process -Id $PID).Path
+    # The fixture itself must be visible for PrintWindow/UIA. Reuse the current
+    # console so no extra terminal window is created.
+    $fixtureProcess = Start-Process -FilePath $hostExe -ArgumentList @('-NoProfile','-File',"`"$fixture`"") -NoNewWindow -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(12)
+    $line = $null
+    while (-not $line -and [DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 200
+        $candidates = @(& $win windows 'smoke fixture' --all 2>$null)
+        $line = @($candidates | Where-Object { $_ -match '^id=0x' } | Select-Object -First 1)
+        if (-not $line.Count) { $line = $null }
+    }
+    if (-not $line.Count -or $line[0] -notmatch 'id=(0x[0-9A-F]+)') { throw '测试窗口 12 秒内没有出现。' }
+    $hwnd = $Matches[1]
+    Write-Output "fixture: $hwnd pid=$($fixtureProcess.Id)"
+
+    $shot = Join-Path $evidence 'shot.png'
+    $see = Join-Path $evidence 'see.png'
+    & $win shot $hwnd $shot
+    if ($LASTEXITCODE) { throw "shot exit=$LASTEXITCODE" }
+    & $win see $hwnd --out $see | Select-Object -First 30
+    if ($LASTEXITCODE) { throw "see exit=$LASTEXITCODE" }
+
+    & $win clickin $hwnd 0.5 0.5 --dry
+    if ($LASTEXITCODE) { throw "clickin --dry exit=$LASTEXITCODE" }
+    & $win clickin $hwnd ("e1@" + $see + '.uia.json') 0 --dry
+    if ($LASTEXITCODE) { throw "UIA map reference --dry exit=$LASTEXITCODE" }
+    # Stop-Hu writes directly to Console.Error.  Invoke a real child pwsh so
+    # both stderr text and the process exit code are observable by the test.
+    $oversizeType = @(& $hostExe -NoProfile -File $win type $hwnd ('x' * 1001) --dry 2>&1)
+    if ($LASTEXITCODE -ne 2 -or (($oversizeType -join "`n") -notmatch '单次输入最多 1000')) {
+        throw 'L2 超长输入没有在发送前明确拒绝。'
+    }
+    $oversizeScroll = @(& $hostExe -NoProfile -File $win scrollin $hwnd 0.5 0.5 120 201 --dry 2>&1)
+    if ($LASTEXITCODE -ne 2 -or (($oversizeScroll -join "`n") -notmatch '不能超过 200')) {
+        throw 'L2 超长滚动没有在发送前明确拒绝。'
+    }
+    Write-Output 'bounded-focus-actions: PASS'
+    $coordinateState = 'SKIP(user-active)'
+    $idle = [HuWin]::UserIdleSeconds()
+    if ($RequireCoordinate -or $idle -ge 2.0) {
+        $mapData = Get-Content -LiteralPath ($see + '.uia.json') -Raw | ConvertFrom-Json
+        $receiptData = Get-Content -LiteralPath ($see + '.receipt.json') -Raw | ConvertFrom-Json
+        $editSpec = @($mapData.elements | Where-Object { $_.ref -eq 'e1' } | Select-Object -First 1)
+        if (-not $editSpec.Count) { throw 'see map 中没有 e1。' }
+        $inkPhysicalX = [double]$editSpec[0].cx - [double]$editSpec[0].width / 2 + [Math]::Min(40, [double]$editSpec[0].width / 4)
+        $imageX = ($inkPhysicalX / [double]$receiptData.imageToWindowScale.x).ToString('0.###', [Globalization.CultureInfo]::InvariantCulture)
+        $imageY = ([double]$editSpec[0].cy / [double]$receiptData.imageToWindowScale.y).ToString('0.###', [Globalization.CultureInfo]::InvariantCulture)
+        $coordinateShot = Join-Path $evidence 'coordinate-after.png'
+        $opOutput = @(& $win op $hwnd $imageX $imageY 'coordinate-smoke' "@$see" --replace shot $coordinateShot)
+        $opOutput | Write-Output
+        $opExit = $LASTEXITCODE
+        if ($opExit) {
+            if ($RequireCoordinate -or $opExit -ne 2) { throw "op exit=$opExit" }
+            $coordinateState = 'SKIP(safety-refusal)'
+        } else {
+            if (($opOutput -join "`n") -notmatch 'op finished；(?:借焦点 [0-9.]+s 后已还原|目标本就在前台，未切换焦点)') {
+                throw 'op 没有给出可审计的真实焦点占用结果。'
+            }
+            $opReceipt = Get-Content -LiteralPath ($coordinateShot + '.receipt.json') -Raw | ConvertFrom-Json
+            if ($opReceipt.action.kind -ne 'op' -or $opReceipt.action.layer -ne 'L2' -or
+                -not $opReceipt.verification.before.sha256 -or -not $opReceipt.verification.effect -or
+                $opReceipt.action.request.PSObject.Properties.Name -contains 'text') {
+                throw 'op 收据没有形成脱敏的 before/action/after/effect 证据链。'
+            }
+            Write-Output 'action-receipt: L2 chain PASS'
+            $coordinateReadback = @()
+            for ($attempt = 0; $attempt -lt 5; $attempt++) {
+                $coordinateReadback = @(& $win uia $hwnd)
+                if (($coordinateReadback -join "`n") -match 'value="coordinate-smoke"') { break }
+                Start-Sleep -Milliseconds 250
+            }
+            if ($LASTEXITCODE -or (($coordinateReadback -join "`n") -notmatch 'value="coordinate-smoke"')) {
+                throw 'op 完成后 UIA 没有读回 coordinate-smoke。'
+            }
+            $rawAfter = [HuWin]::IdleSeconds()
+            $userAfter = [HuWin]::UserIdleSeconds()
+            if ($rawAfter -ge 3 -or $userAfter -lt 2) {
+                throw "自身输入尾迹没有被安全排除：raw=$rawAfter user=$userAfter"
+            }
+            Write-Output ("presence-trail: PASS raw={0:F2}s effective={1:F0}s" -f $rawAfter,$userAfter)
+            $coordinateState = 'PASS'
+        }
+    } else {
+        Write-Output ("coordinate: SKIP，用户仅空闲 {0:F1}s；用 -RequireCoordinate 做发布级严格回归。" -f $idle)
+    }
+
+    # Keep the foreground-sensitive L2 check near fixture startup. Read-only
+    # probing and semantic UIA checks follow so they cannot consume the
+    # foreground-activation window granted by Windows.
+    $probeReport = @(& $probe 'smoke fixture')
+    if ($LASTEXITCODE -or (($probeReport -join "`n") -notmatch "(?m)^相关 PID: $($fixtureProcess.Id)$") -or
+        (($probeReport -join "`n") -notmatch 'editable=1') -or (($probeReport -join "`n") -notmatch 'actionable=1')) {
+        throw '动态 probe 没有严格限定 fixture PID，或 UIA 统计异常。'
+    }
+    Write-Output 'probe: read-only PID scoping/UIA PASS'
+
+    $uia = @(& $win uia $hwnd)
+    if ($LASTEXITCODE -or -not ($uia -match 'Edit')) { throw 'UIA 没有枚举到 fixture Edit。' }
+    $uia | Select-Object -First 20
+    $uiaRead = @(& $win uiaread $hwnd 'instructionLabel')
+    if ($LASTEXITCODE -or (($uiaRead -join "`n") -notmatch 'Safe local automation fixture')) {
+        throw 'uiaread 没有读取到 fixture 静态文本。'
+    }
+    Write-Output 'uiaread: static text PASS'
+    $uiasetOutput = @(& $win uiaset $hwnd first 'semantic-smoke')
+    $uiasetOutput | Write-Output
+    if ($LASTEXITCODE) { throw "uiaset exit=$LASTEXITCODE" }
+    $uiasetReceiptPath = $null
+    foreach ($line in $uiasetOutput) {
+        if ($line -match '^verification: (.+) receipt=(.+)$') { $uiasetReceiptPath = $Matches[2]; [void]$transientEvidence.Add($Matches[1]); [void]$transientEvidence.Add($Matches[2]) }
+    }
+    if (-not $uiasetReceiptPath) { throw 'uiaset 没有输出验证收据。' }
+    $uiasetReceipt = Get-Content -LiteralPath $uiasetReceiptPath -Raw | ConvertFrom-Json
+    if ($uiasetReceipt.action.kind -ne 'uiaset' -or $uiasetReceipt.action.layer -ne 'L1' -or
+        $uiasetReceipt.action.semanticReadback -ne 'matched-changed' -or -not $uiasetReceipt.verification.before.sha256) {
+        throw 'uiaset 收据没有形成语义读回证据链。'
+    }
+    Write-Output 'action-receipt: L1 chain PASS'
+
+    $button = $uia | Where-Object { $_ -match '^(e\d+) Button ' } | Select-Object -First 1
+    if ($button -and $button -match '^(e\d+)') {
+        $invokeOutput = @(& $win invoke $hwnd $Matches[1] ("@" + $see + '.uia.json'))
+        $invokeOutput | Write-Output
+        if ($LASTEXITCODE) { throw "invoke exit=$LASTEXITCODE" }
+        foreach ($line in $invokeOutput) {
+            if ($line -match '^verification: (.+) receipt=(.+)$') { [void]$transientEvidence.Add($Matches[1]); [void]$transientEvidence.Add($Matches[2]) }
+        }
+        $statusRead = @(& $win uiaread $hwnd 'fixtureStatus')
+        if ($LASTEXITCODE -or (($statusRead -join "`n") -notmatch 'status: semantic-smoke')) {
+            throw 'InvokePattern 后 uiaread 没有读回 fixture 状态。'
+        }
+        Write-Output 'uiaread: action side-effect PASS'
+    }
+    & $win hud 80 'win-use-master smoke'
+
+    if (-not (Test-Path -LiteralPath ($shot + '.receipt.json'))) { throw 'shot receipt 未生成。' }
+    if (-not (Test-Path -LiteralPath ($see + '.uia.json'))) { throw 'see UIA map 未生成。' }
+    $evidenceLabel = if ($KeepEvidence) { $evidence } else { 'temporary(auto-cleaned)' }
+    Write-Output "PASS: build/windows/probe/shot/see/uia/uiaread/uiaset/invoke/dry-gates/bounded-focus/hud coordinate=$coordinateState evidence=$evidenceLabel"
+} finally {
+    if ($fixtureProcess -and -not $fixtureProcess.HasExited) {
+        $fixtureProcess.CloseMainWindow() | Out-Null
+        if (-not $fixtureProcess.WaitForExit(3000)) { $fixtureProcess.Kill() }
+    }
+    if (-not $KeepEvidence -and [IO.Directory]::Exists($evidence) -and
+        $evidence.StartsWith([IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFileName($evidence).StartsWith('win-use-master-smoke-')) {
+        [IO.Directory]::Delete($evidence, $true)
+    }
+    if (-not $KeepEvidence) {
+        $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+        foreach ($item in @($transientEvidence | Select-Object -Unique)) {
+            $full = [IO.Path]::GetFullPath($item)
+            $parent = [IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($full)).TrimEnd('\')
+            $name = [IO.Path]::GetFileName($full)
+            if ([string]::Equals($parent, $tempRoot, [StringComparison]::OrdinalIgnoreCase) -and
+                $name -match '^(uiaset|invoke)-after-[0-9a-f]{32}\.png(\.receipt\.json)?$' -and
+                [IO.File]::Exists($full)) {
+                [IO.File]::Delete($full)
+            }
+        }
+    }
+}

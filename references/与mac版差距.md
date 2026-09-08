@@ -1,0 +1,43 @@
+# 与 huashu-mac-use 的功能差距
+
+> 基线：仓库内 `huashu-mac-use-master` 与其 README/SKILL 所表达的设计，以及用户提供的[相关文章](https://mp.weixin.qq.com/s/pgvLMG7pg_1lpPLMN8zbhg)。本表记录 Windows 版本的工程差距，不把操作系统做不到的能力伪装成待实现功能。更新日期：2026-09-08。
+
+## 已经对齐
+
+| 设计能力 | Windows 落点 |
+|---|---|
+| 先探测、再按 L0–L3 选控制面 | `probe.ps1` + `win.ps1` + `cdp.js` |
+| 读操作尽量不借焦点 | `windows/shot/see/uia/uiaread/CDP` |
+| 写优先结构接口和语义层 | CDP `insert/mouse`、UIA `uiaset/invoke` |
+| 坐标写前检查用户在场、遮挡和前台 | 全机锁、idle 等待、前台读回、点位遮挡、光标/前台还原 |
+| 跨桌面/锁屏/权限不明时安全拒绝 | DWM cloaked、输入桌面、UIPI 完整性检查，退出码 2 |
+| 后台截图、判空、必要时短借前台 | `PrintWindow` 看门狗、严格 sibling recovery、`shotfg` 稳定双帧 |
+| 图上坐标到窗口坐标换算 | `@截图` + receipt 中 `imageToWindowScale` |
+| 动作后验证而非相信 API 返回值 | 像素差分、UIA 读回、CDP 交互树摘要与 effect |
+| 每一步机器可读取证 | 截图 receipt；L1/L2 after action 链；CDP `action-receipt-v1` |
+| 陌生 provider 不能卡死 agent | UIA 全部放入 6 秒隔离 worker，写超时标 `unknown` |
+| CDP 不能无限等待 | HTTP/连接 5 秒、请求 6 秒、auto 候选限额、act 200 步/120 秒；写超时标 `unknown` |
+| app 经验回流与版本自检 | `app档案.md`、30 天静默版本检查 |
+
+## 仍缺少或样本不足
+
+| 优先级 | 差距 | 当前状态 / 完成标准 |
+|---|---|---|
+| P0 | 真实 app 档案覆盖不足 | 目前只有 Windows 计算器 11.x 的完整可重放档案。至少再补一个 Win32/WPF app、一个 Chromium/WebView app，并记录版本、重定位规则、读写验证和证伪条件。不得为补档案擅自改用户数据。 |
+| P1 | 一键安装/分发体验未对齐 | Mac 版可直接 `npx skills add`；Windows 版目前是复制目录后编译。需要独立可安装仓库/发布包、安装说明与干净机器验证。 |
+| P1 | 面向用户的真实案例与视觉素材不足 | Mac 版有 Blender/桌面客户端案例、GIF 和架构图；Windows 版目前重工程验证、轻展示。需要经脱敏的 Windows 原生/UIA/CDP 案例与架构图，但不能拿测试 fixture 冒充生产案例。 |
+| P1 | 单 app 经验的广度不足 | Mac 档案覆盖多个 Electron 和原生 app；Windows 需要随真实任务渐进积累，不能凭框架名称推断 UIA/CDP/截图一定可用。 |
+| P2 | HUD 可配置性较少 | 已有不激活、鼠标穿透和 best-effort 排除捕获；尚无 Mac 版的样式选择和显式可捕获演示开关。 |
+| P2 | 翻车过程文档尚未独立沉淀 | 原理、故障、证据、app 档案已拆分，但没有对应 `踩坑实录.md`。只有出现可复现且不能编码消除的教训时再补，避免复制 Mac 结论。 |
+
+## 不应照搬的“差距”
+
+Mac 版可以先尝试向指定 PID 投递合成事件，失败后再借焦点。Windows 对任意现代桌面 app 没有同等可靠、安全、通用的 per-PID 后台键鼠接口；`PostMessage`、窗口消息伪造和注入都不能等价替代 `SendInput`，还会绕过真实命中测试或扩大权限风险。因此 Windows 版把所有 L2 坐标输入设计为“短暂借前台 + 完整安全闸”，这是平台适配，不是待补 bug。
+
+同理，macOS 的 AppleScript 字典、TCC、Space 和 CGWindow 能力，在 Windows 分别对应 app 自有 CLI/COM/协议、UIPI/UAC、虚拟桌面 cloaking 和 `PrintWindow`/DWM；只能保持设计原则一致，不能追求命令逐字一致。
+
+## 下一步顺序
+
+1. 在不复用用户已打开实例的前提下，补一个真实 Chromium/WebView 档案回归。
+2. 再补一个常见 Win32/WPF app 的只读 + 可逆写回归。
+3. 最后处理发布安装、案例素材和 HUD 可配置项。

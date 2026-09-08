@@ -506,14 +506,27 @@ public class HuWin
 
     private static int BitmapColorCount(Bitmap bitmap, int step, int stopAfter)
     {
+        return BitmapColorCount(bitmap, step, stopAfter, true);
+    }
+
+    // cropDecorations=true ignores the title/tool bars and borders so a rendered
+    // frame around a dead client area does not count as content. false measures
+    // the whole frame; comparing the two tells "interior uniform, chrome rendered"
+    // (empty document, blank canvas or shell window) apart from "nothing rendered".
+    private static int BitmapColorCount(Bitmap bitmap, int step, int stopAfter, bool cropDecorations)
+    {
         var seen = new HashSet<int>();
-        int x0 = bitmap.Width * 8 / 100;
-        int x1 = bitmap.Width - x0;
-        int y0 = bitmap.Height * 18 / 100;
-        int y1 = bitmap.Height - bitmap.Height * 8 / 100;
-        if (x1 <= x0 || y1 <= y0)
+        int x0 = 0, y0 = 0, x1 = bitmap.Width, y1 = bitmap.Height;
+        if (cropDecorations)
         {
-            x0 = y0 = 0; x1 = bitmap.Width; y1 = bitmap.Height;
+            x0 = bitmap.Width * 8 / 100;
+            x1 = bitmap.Width - x0;
+            y0 = bitmap.Height * 18 / 100;
+            y1 = bitmap.Height - bitmap.Height * 8 / 100;
+            if (x1 <= x0 || y1 <= y0)
+            {
+                x0 = y0 = 0; x1 = bitmap.Width; y1 = bitmap.Height;
+            }
         }
         step = Math.Max(1, step);
         for (int y = y0; y < y1; y += step)
@@ -754,6 +767,16 @@ public class HuWin
     // failure. Unlike the old implementation this really uses R/G/B (not Alpha+R).
     public static int ColorCount(string path, int sampleWidth)
     {
+        return ColorCount(path, sampleWidth, true);
+    }
+
+    // Whole-frame variant (cropDecorations=false). An empty Notepad document and a
+    // black Chromium shell both score 1 in the cropped interior; both score ~20 on
+    // the full frame because the title bar alone renders that many buckets. So the
+    // frame count cannot prove content exists, but a frame count below 6 does prove
+    // that nothing at all was rendered.
+    public static int ColorCount(string path, int sampleWidth, bool cropDecorations)
+    {
         if (String.IsNullOrEmpty(path) || !File.Exists(path)) return -1;
         if (sampleWidth <= 0) sampleWidth = 64;
         try
@@ -771,7 +794,7 @@ public class HuWin
                         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                         graphics.DrawImage(image, 0, 0, width, height);
                     }
-                    return BitmapColorCount(small, 1, 0);
+                    return BitmapColorCount(small, 1, 0, cropDecorations);
                 }
             }
         }

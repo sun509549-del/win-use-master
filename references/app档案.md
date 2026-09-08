@@ -28,7 +28,7 @@ pwsh -NoProfile -File "$SKILL_DIR/scripts/probe.ps1" "显示名或 exe 路径"
 pwsh -NoProfile -File "$SKILL_DIR/scripts/win.ps1" windows "关键词"
 
 # 3. 读取窗口图、收据与当次 UIA map
-pwsh -NoProfile -File "$SKILL_DIR/scripts/win.ps1" see <hwnd> --out .\evidence\raw\app-see.png
+pwsh -NoProfile -File "$SKILL_DIR/scripts/win.ps1" see <hwnd> .\evidence\raw\app-see.png
 
 # 4. 必要时单独复核 UIA
 pwsh -NoProfile -File "$SKILL_DIR/scripts/win.ps1" uia <hwnd>
@@ -201,6 +201,77 @@ L3_capture:
 
 本轮证据只保留在受控临时目录并在收尾清理；可复现路径是 `tests/calculator-profile.ps1`，内部执行 `open(AUMID) → see → 从 map 按 AutomationId 取 ref → invoke → uiaread CalculatorResults → 恢复/关闭`。结论不依赖 HWND、PID 或短 ref。
 
+### 记事本 · 11.2607.14.0 · 实测 2026-09-08
+
+> 第二个完整可重放档案：`tests/notepad-profile.ps1`。覆盖 **Document（非 Edit）控件的 L1 可逆写**、两种应用状态指示器的读回，以及“空白文档不是黑帧”的截图诊断。测试拒绝复用运行中的记事本，也拒绝向恢复出来的会话写入。
+
+```yaml
+显示名: 记事本
+实测日期: 2026-09-08
+版本: 11.2607.14.0                          # 核对 2026-09-08
+安装形态: Microsoft Store / MSIX（打包桌面 app，不经 ApplicationFrameHost）
+exe: C:\Program Files\WindowsApps\Microsoft.WindowsNotepad_11.2607.14.0_x64__8wekyb3d8bbwe\Notepad\Notepad.exe  # 核对 2026-09-08
+包标识/AUMID: Microsoft.WindowsNotepad_8wekyb3d8bbwe!App
+架构: x64
+进程:
+  主进程: Notepad.exe Medium；同 PID 另有 0x0 的 IME / MSCTFIME UI / GDI+ Hook 辅助窗口，windows 默认过滤
+  旧版: System32\notepad.exe 10.0.26100 仍存在；本轮未测它是否转交 Store 版
+窗口:
+  owner: Notepad
+  title 规则: “<标签名> - Notepad”（界面中文，标题用英文产品名；启动动画期短暂为“记事本”）
+  class: Notepad
+  主窗口识别: owner=Notepad + class=Notepad + state=current；不要用标题里的中文名
+  完整性: Medium
+  --background: 未测（open 走 AUMID/shell，不支持该开关）
+
+L0:
+  CLI: 未测
+  URL protocol: ms-notepad://（AppxManifest；未调用）
+  本地端口: 无
+  CDP: 无；probe 无任何 Chromium/WebView2 信号（WinUI 原生）
+  COM: 无
+  启动/重启风险: 见“会话持久化”——关闭不提示，内容留到下次
+
+L1_UIA:
+  总体: 可用（完整写链路已回归）
+  文本区: ControlType=Document Name=“文本编辑器” ClassName=RichEditD2DPT AutomationId 为空；patterns=ValuePattern,TextPattern
+  输入定位: 唯一的 Document(ValuePattern)；worker 的 `first` 在无 Edit 时兜底选它（2026-09-08 编码）
+  输入 pattern: ValuePattern.SetValue；读回逐字一致（41/30 字符两次）
+  状态指示器 1: 状态栏 Text AutomationId=ContentTextBlock value=“N 个字符” 随内容变化（0→41→0）
+  状态指示器 2: TabItem Name=“<前约 35 字>. 已修改。” ↔ “无标题. 未修改。”；写空串后回到未修改
+  动作定位: MenuItem File/Edit/View；Button CloseButton/AddButton/FREButton/SettingsButton；格式工具栏按钮（标题/列表/加粗…）为 TogglePattern，无 AutomationId
+  实测判据: uiaread Document value + “N 个字符” + 标签状态三者一致
+  暗拒: 未遇到；像素差分对“清空”一步报 suspected_noop，以语义读回为准
+
+L2_SendInput: 未测；L1 已覆盖，不降级
+
+L3_capture:
+  PrintWindow_后台: 完整（1512x1022 @144DPI，标签/工具栏/状态栏俱在）
+  判空启发式: 空文档时内容区 1 桶、整帧 37 桶；2026-09-08 起收据写 frameColorBuckets，see 用 UIA 空 Document 说明“不是截图失败”，shotfg 不再为空文档借前台
+  screen_合成: 未测
+  CDP_shot: 不适用
+
+验证:
+  输入生效: uiaread Document value 逐字一致 + 状态栏字符数
+  动作生效: 标签“已修改/未修改”
+  最终副作用: 本档案只做可逆写，不落文件
+
+安全:
+  风险类别: 普通
+  停手点: 保存/另存为/覆盖；关闭含用户内容的标签
+  会话持久化: 关闭已修改标签**不弹提示**，下次启动原样恢复。任何写入必须自己还原；测试失败路径先清空再关窗。
+  敏感像素: 用户恢复出的标签内容
+
+已知坑:
+  - 文本区是 Document 不是 Edit，旧 worker 列不到、`first` 找不到 → 2026-09-08 已编码：动作元素纳入 Document，first 兜底 Document(ValuePattern)。
+  - 空白文档触发“接近纯色”并会误导去 shotfg/CDP → 已编码：整帧桶数 + UIA 空 Document 交叉验证。
+  - 一次失败运行把测试文本留进了会话，下次启动被自己的“拒绝写入恢复会话”闸拦住 → 测试 finally 现在会先清空。
+  - Document 铺满窗口，像素差分若取控件中心会落在空白处 → uiaset 对 Document 改取首行附近。
+  - 标题是英文“Notepad”，显示名/开始菜单是“记事本”；probe/open 用显示名，窗口定位用 owner/class。
+```
+
+可复现路径 `tests/notepad-profile.ps1`：`open(AUMID) → see（位置参数路径）→ 校验唯一 Document(ValuePattern)、单标签未修改、文档为空 → uiaset first → uiaread/uia 读回三指示器 → uiaset first '' → 读回归零 → CloseMainWindow`。
+
 ### Microsoft Excel · 16.0.20326.20132 · 只读探测 2026-09-08
 
 > 本条只来自 `probe.ps1 "Excel"`，**未启动、未实例化 COM、未截图、未写入**。不能据此点击或改用户工作簿。
@@ -300,7 +371,7 @@ L3_capture:
 已知坑:
   - 开始菜单 “WorkBuddy AI” vs exe WorkBuddyAI；不要启动 updater。
   - 有本地端口 ≠ CDP。
-  - `win.ps1 see --out` 经 `pwsh -File` 时 `--out` 会撞 PowerShell 公共参数，需 `pwsh -Command` 或把路径当位置参数。
+  - `win.ps1 see --out` 经 `pwsh -File` 时 `--out` 被宿主当成二义公共参数前缀（-OutVariable/-OutBuffer）→ 2026-09-08 已编码：`see <target> <path>` 位置参数；`--out` 只在进程内 `&` 调用可用。
 ```
 
 ### 剪映专业版 · 10.4.0.13957 · 启动器 + 环境检测弹窗 2026-09-08

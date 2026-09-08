@@ -32,9 +32,14 @@ function Get-PatternNames($Element) {
 }
 
 function Get-ActionElements($Root, $Bounds, [int] $Limit) {
+    # Document is included because RichEdit/WinUI editors (Notepad 11, WordPad-
+    # style controls) expose their text area as Document, not Edit, while still
+    # offering ValuePattern. Chromium pages also appear as Document; SetValue on
+    # them is refused later by the ValuePattern check, so listing them is safe.
     $types = @(
         [Windows.Automation.ControlType]::Button,
         [Windows.Automation.ControlType]::Edit,
+        [Windows.Automation.ControlType]::Document,
         [Windows.Automation.ControlType]::CheckBox,
         [Windows.Automation.ControlType]::RadioButton,
         [Windows.Automation.ControlType]::ComboBox,
@@ -139,7 +144,11 @@ function Get-ReadableElements($Root, [int] $Limit) {
 
 function Resolve-Element($Elements, [string] $Reference, $Spec) {
     if ($Reference -eq 'first') {
-        return @($Elements | Where-Object ControlType -EQ 'Edit' | Select-Object -First 1)
+        # Prefer a real Edit; fall back to a Document that exposes ValuePattern so
+        # single-document editors are writable without a hand-picked ref.
+        $edit = @($Elements | Where-Object ControlType -EQ 'Edit' | Select-Object -First 1)
+        if ($edit.Count) { return $edit }
+        return @($Elements | Where-Object { $_.ControlType -eq 'Document' -and 'ValuePattern' -in $_.Patterns } | Select-Object -First 1)
     }
     if ($Reference -notmatch '^e\d+$') { return @() }
     if ($null -eq $Spec) { return @($Elements | Where-Object Ref -EQ $Reference | Select-Object -First 1) }

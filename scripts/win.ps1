@@ -395,14 +395,39 @@ function Invoke-BackgroundShot($Window, [string] $Path, [switch] $NoReceipt, [sw
         Stop-Hu "后台截图失败：窗口可能已关闭、进入安全桌面，或拒绝/超时 PrintWindow。目标 $(Format-Hwnd $Window.Hwnd)。$cdpHint$(Get-ScreenCrossCheckHint $Window)" 1
     }
     if ($colors -lt 0) { $colors = [HuWin]::ColorCount($full, 160) }
+    # The interior count ignores title/tool bars. When it is near-uniform, also
+    # measure the whole frame: an empty editor and a dead client area look the
+    # same inside, but a frame that rendered nothing at all is a different fault.
+    $frameColors = if ($colors -lt 6) { [HuWin]::ColorCount($full, 160, $false) } else { $null }
     $receipt = New-Receipt $selectedWindow $full $size.Width $size.Height $colors $method
+    if ($null -ne $frameColors) { $receipt['frameColorBuckets'] = $frameColors }
     if ($null -ne $recoveredFrom) {
         $receipt['recoveredFrom'] = @{ hwnd = Format-Hwnd $recoveredFrom.Hwnd; pid = $recoveredFrom.Pid; owner = $recoveredFrom.Owner }
     }
     $sidecar = $null
     if (-not $NoReceipt) { $sidecar = Save-Receipt $receipt $full }
     $cdpPort = if ($colors -lt 6) { Find-HuCdpPort $selectedWindow } else { $null }
-    return [pscustomobject]@{ Window = $selectedWindow; RecoveredFrom = $recoveredFrom; CdpPort = $cdpPort; Path = $full; Width = $size.Width; Height = $size.Height; Colors = $colors; Receipt = $receipt; Sidecar = $sidecar }
+    return [pscustomobject]@{ Window = $selectedWindow; RecoveredFrom = $recoveredFrom; CdpPort = $cdpPort; Path = $full; Width = $size.Width; Height = $size.Height; Colors = $colors; FrameColors = $frameColors; Receipt = $receipt; Sidecar = $sidecar }
+}
+
+# Pixels cannot tell an empty document from a shell whose client area never
+# rendered: both are a uniform interior under a rendered frame. Report which shape
+# was seen and point at semantic cross-checks instead of implying a capture fault.
+function Get-BlankFrameHint($Result, $Window, $Elements = $null) {
+    $cdpRoute = if ($null -ne $Result.CdpPort) { "已发现目标 CDP 端口 $($Result.CdpPort)：node `"$PSScriptRoot\cdp.js`" $($Result.CdpPort) shot auto <路径>。" } else { '' }
+    $frame = $Result.FrameColors
+    if ($null -eq $frame -or $frame -lt 6) {
+        return "effect=unverifiable ⚠️ 整帧接近纯色（内容区 $($Result.Colors) 桶，整帧 $frame 桶）：应用可能拒绝后台渲染，也可能窗口本来就是空白。${cdpRoute}可改 shotfg；Chromium 系先用 probe 查 CDP。$(Get-ScreenCrossCheckHint $Window)"
+    }
+    $semantic = ''
+    if ($null -ne $Elements) {
+        $texts = @($Elements | Where-Object { [string]$_.ControlType -in @('Document', 'Edit') })
+        $filled = @($texts | Where-Object { -not [string]::IsNullOrEmpty([string]$_.Value) })
+        $empty = @($texts | Where-Object { [string]::IsNullOrEmpty([string]$_.Value) })
+        if ($filled.Count) { $semantic = " UIA 却读到 $($filled.Count) 个非空 Document/Edit：像素与语义不一致，内容层可能未渲染，用 screen --window 交叉验证。" }
+        elseif ($empty.Count) { $semantic = " UIA 读到空的 $($empty[0].ControlType)「$($empty[0].Name)」，与单色内容区一致：多半是空文档，不是截图失败。" }
+    }
+    return "⚠️ 内容区接近单色但窗口框/工具栏已渲染（内容区 $($Result.Colors) 桶，整帧 $frame 桶）：可能是空白文档/画布，也可能是壳窗口或内容层未渲染。${semantic}${cdpRoute}$(if (-not $semantic) { ' 先 uiaread 看 Document/Edit 是否为空，或 screen --window 交叉验证；都判断不了再 shotfg。' })"
 }
 
 # PrintWindow asks the app to paint itself; it can hand back a stale or black
@@ -851,7 +876,7 @@ win-use-master — Windows 原生 app 的分层操控与可复现取证
 
 读取（不抢焦点）:
   win.ps1 windows [关键词] [--all]
-  win.ps1 see <hwnd|pid|owner> [--out path]
+  win.ps1 see <hwnd|pid|owner> [path]          # 也接受 --out path，但 pwsh -File 下只能用位置参数
   win.ps1 shot <hwnd|owner> <path>
   win.ps1 shotfg <hwnd|owner> <path>          # 后台空图才短暂借焦点
   win.ps1 screen <path> [--window <target>] [--region x y w h]   # 桌面合成截图，交叉验证 PrintWindow
@@ -909,10 +934,7 @@ switch ($Command.ToLowerInvariant()) {
         $result = Invoke-BackgroundShot $w $CommandArgs[1]
         $recovery = if ($null -ne $result.RecoveredFrom) { " recovered-from=$(Format-Hwnd $result.RecoveredFrom.Hwnd)" } else { '' }
         Write-Output ("shot {0} -> {1} {2}x{3}px colors={4}{5} receipt={6}" -f (Format-Hwnd $result.Window.Hwnd), $result.Path, $result.Width, $result.Height, $result.Colors, $recovery, $result.Sidecar)
-        if ($result.Colors -lt 6) {
-            $route = if ($null -ne $result.CdpPort) { "已发现目标 CDP 端口 $($result.CdpPort)：node `"$PSScriptRoot\cdp.js`" $($result.CdpPort) shot auto <路径>" } else { '改 shotfg；Chromium 系先用 probe 查 CDP' }
-            Write-Output "effect=unverifiable ⚠️ 图像接近纯色；可能是应用拒绝后台渲染，也可能窗口本来就是空白。$route。$(Get-ScreenCrossCheckHint $result.Window)"
-        }
+        if ($result.Colors -lt 6) { Write-Output (Get-BlankFrameHint $result $result.Window) }
         break
     }
 
@@ -950,10 +972,16 @@ switch ($Command.ToLowerInvariant()) {
     }
 
     'see' {
-        if (-not $CommandArgs.Count) { Stop-Hu '用法: win.ps1 see <hwnd|pid|owner> [--out 路径]' }
+        if (-not $CommandArgs.Count) { Stop-Hu '用法: win.ps1 see <hwnd|pid|owner> [路径 | --out 路径]' }
         $w = Resolve-HuWindow $CommandArgs[0]
+        # Positional path is the portable form. `--out` only works for in-process
+        # `& win.ps1` calls: under `pwsh -File` the host binds `--out` as the
+        # ambiguous common parameter prefix -Out(Variable|Buffer) before the
+        # script runs, so it cannot be repaired here.
         $outIndex = [Array]::IndexOf($CommandArgs, '--out')
-        $out = if ($outIndex -ge 0 -and $outIndex + 1 -lt $CommandArgs.Count) { Get-AbsolutePath $CommandArgs[$outIndex + 1] } else { New-TempPng "see-$($w.Pid)" }
+        $out = if ($outIndex -ge 0 -and $outIndex + 1 -lt $CommandArgs.Count) { Get-AbsolutePath $CommandArgs[$outIndex + 1] }
+               elseif ($CommandArgs.Count -ge 2 -and -not $CommandArgs[1].StartsWith('--')) { Get-AbsolutePath $CommandArgs[1] }
+               else { New-TempPng "see-$($w.Pid)" }
         $raw = New-TempPng "see-raw-$($w.Pid)"
         try {
             $shot = Invoke-BackgroundShot $w $raw -NoReceipt
@@ -963,6 +991,7 @@ switch ($Command.ToLowerInvariant()) {
             $img = [Drawing.Image]::FromFile($out)
             try { $ow = $img.Width; $oh = $img.Height } finally { $img.Dispose() }
             $receipt = New-Receipt $w $out $ow $oh ([HuWin]::ColorCount($out,160)) ($shot.Receipt.method + '+downsample')
+            if ($null -ne $shot.FrameColors) { $receipt['frameColorBuckets'] = $shot.FrameColors }
             if ($null -ne $shot.RecoveredFrom) {
                 $receipt['recoveredFrom'] = @{ hwnd = Format-Hwnd $shot.RecoveredFrom.Hwnd; pid = $shot.RecoveredFrom.Pid; owner = $shot.RecoveredFrom.Owner }
             }
@@ -972,10 +1001,7 @@ switch ($Command.ToLowerInvariant()) {
             Save-UiaMap $w $elements $mapPath $out
             Write-Output "截图: $out ${ow}x${oh}px（图上坐标可直接配 @$out 使用）"
             Write-Output "窗口: $(Format-Window $w) receipt=$sidecar"
-            if ($shot.Colors -lt 6) {
-                $route = if ($null -ne $shot.CdpPort) { "已发现 CDP $($shot.CdpPort)，直接用 cdp.js shot" } else { '可改 shotfg；Chromium/Electron 先用 probe 查 CDP' }
-                Write-Output "⚠️ 后台图接近纯色：$route。$(Get-ScreenCrossCheckHint $w)"
-            }
+            if ($shot.Colors -lt 6) { Write-Output (Get-BlankFrameHint $shot $w $elements) }
             if (-not $elements.Count) { Write-Output 'UIA 元素表: 无。可能 app 不暴露、窗口在其它虚拟桌面，或 Chromium 树断开；改 CDP/坐标。' }
             else {
                 Write-Output "UIA 元素表 $($elements.Count) 个，map=$mapPath（引用示例: $($elements[0].Ref)@$mapPath）："
@@ -1052,6 +1078,9 @@ switch ($Command.ToLowerInvariant()) {
             elseif (-not $reply.Result.changed) { $readback = 'unchanged'; Write-Output 'effect=suspected_noop UIA 返回但读回没变；改 CDP insert 或 op。' }
             else { $readback = 'changed-not-equal'; Write-Output 'effect=unverifiable 值发生变化但与目标不完全一致；截图复核。' }
             $textInkX = [double]$item.cx - [double]$item.width / 2 + [Math]::Min(40, [double]$item.width / 4)
+            # A Document fills the window; its first line sits near the top, so the
+            # pixel check must look there rather than at the (usually empty) centre.
+            $textInkY = if ([string]$item.controlType -eq 'Document') { [double]$item.cy - [double]$item.height / 2 + [Math]::Min(40, [double]$item.height / 4) } else { [double]$item.cy }
             $actionEvidence = [ordered]@{
                 layer = 'L1'; kind = 'uiaset'; pattern = 'ValuePattern'; recordedAt = [DateTimeOffset]::Now.ToString('o')
                 target = [ordered]@{ ref = $item.ref; automationId = $item.automationId; controlType = $item.controlType }
@@ -1060,7 +1089,7 @@ switch ($Command.ToLowerInvariant()) {
                 worker = [ordered]@{ isolated = $true; deadlineMilliseconds = $script:UiaTimeoutMilliseconds }
                 focus = [ordered]@{ borrowed = $false; seconds = 0 }
             }
-            Write-VerificationReport $w $beforeShot $afterShot ($textInkX/[double]$w.W) ([double]$item.cy/[double]$w.H) -ActionEvidence $actionEvidence
+            Write-VerificationReport $w $beforeShot $afterShot ($textInkX/[double]$w.W) ($textInkY/[double]$w.H) -ActionEvidence $actionEvidence
             if (-not (Test-Path -LiteralPath $afterShot)) { Stop-Hu 'effect=unknown: UIA 值可能已写入，但动作后截图失败。不要自动重试；先检查读回与最终副作用。' 2 }
         } finally {
             if (Test-Path -LiteralPath $beforeShot) { [IO.File]::Delete($beforeShot) }
@@ -1121,7 +1150,21 @@ switch ($Command.ToLowerInvariant()) {
             Write-Output "截图: $($first.Path)；后台直接截到，未动焦点。receipt=$($first.Sidecar)"
             break
         }
-        if ($script:Dry) { Write-Output "dry: 后台图 colors=$($first.Colors)，下一档会短暂借焦点。$(Get-GatePreview $w $null)"; break }
+        # Borrowing focus cannot add content to an empty editor. When the frame
+        # rendered and UIA reads an empty Document/Edit with no non-empty sibling,
+        # the uniform interior is the app's real state; keep the background image.
+        if ($null -ne $first.FrameColors -and $first.FrameColors -ge 6) {
+            $reply = Invoke-UiaWorker $w -Mode list -Limit 180
+            if (-not $reply.TimedOut -and $reply.ExitCode -eq 0 -and $null -ne $reply.Result -and $reply.Result.ok) {
+                $texts = @(@($reply.Result.items) | Where-Object { [string]$_.controlType -in @('Document', 'Edit') })
+                $filled = @($texts | Where-Object { -not [string]::IsNullOrEmpty([string]$_.value) })
+                if ($texts.Count -and -not $filled.Count) {
+                    Write-Output "截图: $($first.Path)；内容区单色但窗口框已渲染（整帧 $($first.FrameColors) 桶），UIA 读到空的 $($texts[0].controlType)「$($texts[0].name)」。空文档借前台也不会有内容，未动焦点。receipt=$($first.Sidecar)"
+                    break
+                }
+            }
+        }
+        if ($script:Dry) { Write-Output "dry: 后台图 colors=$($first.Colors) frame=$($first.FrameColors)，下一档会短暂借焦点。$(Get-GatePreview $w $null)"; break }
         $captureState = [pscustomobject]@{ Settled = $false }
         $timing = Invoke-WithBorrowedFocus $w {
             for ($attempt = 0; $attempt -lt 12; $attempt++) {

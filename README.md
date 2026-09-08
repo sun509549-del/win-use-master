@@ -83,10 +83,10 @@ pwsh -NoProfile -File "$SKILL_DIR\scripts\probe.ps1" "notepad.exe"
 
 ```powershell
 & "$SKILL_DIR\scripts\win.ps1" windows "记事本"
-& "$SKILL_DIR\scripts\win.ps1" see <hwnd> --out .\evidence\notepad-see.png
+& "$SKILL_DIR\scripts\win.ps1" see <hwnd> .\evidence\notepad-see.png
 ```
 
-`see` 会生成缩略窗口图、`.receipt.json` 收据和 `.uia.json` 元素图。先读这些，再决定是否需要写。
+`see` 会生成缩略窗口图、`.receipt.json` 收据和 `.uia.json` 元素图。先读这些，再决定是否需要写。输出路径用位置参数；`--out` 只在进程内 `&` 调用时可用，经 `pwsh -File` 会被宿主当成二义的 `-OutVariable/-OutBuffer` 前缀而拒绝。
 
 ## 四层控制面
 
@@ -127,7 +127,7 @@ CDP 可在窗口被遮挡时读写渲染页面，也能避免抢焦点。但它�
 
 `uiaread` 专门读取 Text/Document/Edit/Status/Header 语义内容，可按名称、值或 AutomationId 过滤；密码控件只返回脱敏标记。所有 UIA 枚举、读取、引用解析与动作都在独立 worker 中执行，6 秒不返回就终止 worker，避免异常 provider 卡死 agent。读操作超时表示本轮不可用；写操作超时必须标成 `effect=unknown`，因为动作可能已发生，禁止自动重试。
 
-`uiaset` 只对支持 `ValuePattern` 的元素生效；`invoke` 会选择元素实际支持的 Invoke/Toggle/Selection/ExpandCollapse pattern。它们通常不借前台，但返回成功仍可能是应用层 no-op。必须继续检查读回、按钮状态或最终副作用。写入正文通过 stdin 传给 worker，不出现在 worker 命令行。
+`uiaset` 只对支持 `ValuePattern` 的元素生效，Edit 与 Document 都算（记事本 11 的文本区就是 RichEdit Document，`first` 在没有 Edit 时会兜底选它）；`invoke` 会选择元素实际支持的 Invoke/Toggle/Selection/ExpandCollapse pattern。它们通常不借前台，但返回成功仍可能是应用层 no-op。必须继续检查读回、按钮状态或最终副作用。写入正文通过 stdin 传给 worker，不出现在 worker 命令行。
 
 UIA `eN` 只对当次枚举有意义。窗口重绘后重新 `uia`；或者使用 `see` 保存的 map，通过 `e3@path\to\image.uia.json` 让工具按 AutomationId/名称和位置重新匹配。
 
@@ -161,7 +161,7 @@ Windows `SendInput` 是全局输入流，不携带目标 PID/HWND。工具会短
 
 `shot` 使用带 2.5 秒看门狗的 `PrintWindow(PW_RENDERFULLCONTENT)`，窗口被遮挡时也**可能**拿到干净窗口图；超时不会把半张图覆盖到目标路径。若命中接近纯色的壳窗口，它只在“窗口几何近似相同且进程存在父子血缘”时尝试同位渲染 sibling，并把原/实际 HWND 写进收据。每张图还会记录 PID、窗口矩形、图像尺寸、DPI、图像到物理窗口的缩放、时间、方法和 SHA-256。修改型命令的 after 收据进一步保存脱敏 action、before/after 哈希、像素 effect、语义读回与焦点时长，形成可追溯链；不保存输入正文。对 DPI-unaware app，PNG 可能是 app 的逻辑像素尺寸；`@截图` 换算与收据会保留它到物理窗口的映射。
 
-`PrintWindow` 是请目标 app 自己绘制，不是桌面合成真相。最小化、硬件加速、视频、游戏、受保护内容和某些 Chromium 窗口可能返回黑图、空图或旧帧，即使 API 返回成功。`shotfg` 只是在后台图接近纯色时短暂借前台，并在有限窗口内等待两张连续非空帧。窗口在当前桌面时，用 `screen --window` 做桌面合成交叉验证（图中含遮挡物）。若目标进程树已有 CDP，空图诊断会给出准确端口和替代命令。
+`PrintWindow` 是请目标 app 自己绘制，不是桌面合成真相。最小化、硬件加速、视频、游戏、受保护内容和某些 Chromium 窗口可能返回黑图、空图或旧帧，即使 API 返回成功。反过来，判空启发式也会把空白文档当成空图：空的记事本和黑壳窗口在内容区都是 1 个颜色桶，整帧都约 20 桶。所以收据在内容区单色时额外记录 `frameColorBuckets`，`see` 会用 UIA 读到的空 Document/Edit 说明“这是空文档不是截图失败”，`shotfg` 在这种情况下不会借前台。`shotfg` 只是在后台图接近纯色且无法用语义解释时短暂借前台，并在有限窗口内等待两张连续非空帧。窗口在当前桌面时，用 `screen --window` 做桌面合成交叉验证（图中含遮挡物）。若目标进程树已有 CDP，空图诊断会给出准确端口和替代命令。
 
 `open --background` 请求首个窗口不激活，属 best effort；工具会回读前台是否被抢。`scrollin --horizontal` 发送横向滚轮。`probe.ps1` 会只读枚举指向该 exe 的 COM LocalServer32/TypeLib。
 
@@ -199,7 +199,7 @@ $WIN = "$SKILL_DIR\scripts\win.ps1"
 
 ```text
 win.ps1 windows [关键词] [--all]
-win.ps1 see <hwnd|pid|owner> [--out path]
+win.ps1 see <hwnd|pid|owner> [path]        # --out 仅进程内 & 调用可用
 win.ps1 shot <hwnd|owner> <path>
 win.ps1 shotfg <hwnd|owner> <path>         # 后台近空图时才借前台重试 PrintWindow
 win.ps1 screen <path> [--window <target>] [--region x y w h]  # 桌面合成，交叉验证陈旧帧
@@ -297,6 +297,7 @@ win-use-master/
 │   ├── capture-recovery.ps1 # 截图 sibling recovery 与收据回归
 │   ├── uia-timeout.ps1   # UIA worker 挂起、终止与 unknown 收据回归
 │   ├── calculator-profile.ps1 # 可选：真实 Windows 计算器档案回归
+│   ├── notepad-profile.ps1 # 可选：真实记事本 11 Document 可逆写档案回归
 │   ├── fixture.ps1       # 只在本机打开的受控 WinForms 测试窗
 │   └── smoke.ps1         # 编译、截图、UIA、闸门与输入回归
 └── references/
@@ -321,11 +322,12 @@ pwsh -NoProfile -File "$SKILL_DIR\tests\cdp-ownership.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\cdp-action-receipt.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\capture-recovery.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\uia-timeout.ps1"
-# 可选真实 app 测试：仅在计算器原本未打开时运行
+# 可选真实 app 测试：仅在计算器 / 记事本原本未打开时运行
 pwsh -NoProfile -File "$SKILL_DIR\tests\calculator-profile.ps1"
+pwsh -NoProfile -File "$SKILL_DIR\tests\notepad-profile.ps1"
 ```
 
-首个烟测会打开一个无外部副作用的本地 WinForms 测试窗，依次验证编译、只读 probe 的 PID 限定、后台截图与收据、`see`/UIA map、隔离 UIA worker、`uiaread` 静态文本与动作副作用回读、`ValuePattern`、`InvokePattern`、动作上限和安全闸预演，并在用户已空闲时验证短暂借前台的坐标输入、真实焦点占用时长与自身输入尾迹排除；用户正操作电脑时默认明确跳过 L2。发布前用 `-RequireCoordinate` 要求 L2 必须通过，它需要活动交互桌面且运行期间不要操作键鼠。若 Windows Foreground Lock 拒绝切前台，退出码 `2` 是安全拒绝，不应强行绕过。CDP owner 测试使用隐藏 HTTP fixture 验证错实例端口拒绝；动作收据测试使用本工具自己启动的临时无头 Edge，验证真实 `text/click/press/act`、脱敏、确定失败和请求/脚本截止时间的 `unknown`，随后只清理该测试 profile 对应进程；截图恢复测试使用两个同进程同位置窗口验证壳/渲染 sibling 选择与收据；UIA 超时测试确定性挂起 worker，验证父进程会终止它并把写结果标成 unknown。计算器测试是可选的机器档案回归：拒绝复用已打开的计算器，验证 AUMID 启动、UWP 宿主窗口、中文 UIA、`1+2=3` 回读，最后恢复 0 并正常关闭。
+首个烟测会打开一个无外部副作用的本地 WinForms 测试窗，依次验证编译、只读 probe 的 PID 限定、后台截图与收据、`see`/UIA map、隔离 UIA worker、`uiaread` 静态文本与动作副作用回读、`ValuePattern`、`InvokePattern`、动作上限和安全闸预演，并在用户已空闲时验证短暂借前台的坐标输入、真实焦点占用时长与自身输入尾迹排除；用户正操作电脑时默认明确跳过 L2。发布前用 `-RequireCoordinate` 要求 L2 必须通过，它需要活动交互桌面且运行期间不要操作键鼠。若 Windows Foreground Lock 拒绝切前台，退出码 `2` 是安全拒绝，不应强行绕过。CDP owner 测试使用隐藏 HTTP fixture 验证错实例端口拒绝；动作收据测试使用本工具自己启动的临时无头 Edge，验证真实 `text/click/press/act`、脱敏、确定失败和请求/脚本截止时间的 `unknown`，随后只清理该测试 profile 对应进程；截图恢复测试使用两个同进程同位置窗口验证壳/渲染 sibling 选择与收据；UIA 超时测试确定性挂起 worker，验证父进程会终止它并把写结果标成 unknown。计算器测试是可选的机器档案回归：拒绝复用已打开的计算器，验证 AUMID 启动、UWP 宿主窗口、中文 UIA、`1+2=3` 回读，最后恢复 0 并正常关闭。记事本测试同样可选：拒绝复用运行中的记事本，也拒绝向恢复出的会话写入；验证 `see` 位置参数路径、空白文档的截图诊断、Document `ValuePattern` 写入与状态栏字符数、标签“已修改/未修改”两种指示器回读，再清空并关闭——记事本 11 关闭已修改标签不会提示而是留到下次会话，所以失败路径也会先清空。
 
 ## 许可证
 

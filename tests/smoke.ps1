@@ -57,6 +57,14 @@ try {
     if ($LASTEXITCODE) { throw "shot exit=$LASTEXITCODE" }
     & $win see $hwnd --out $see | Select-Object -First 30
     if ($LASTEXITCODE) { throw "see exit=$LASTEXITCODE" }
+    # `--out` is bound as the ambiguous -Out(Variable|Buffer) prefix by a real
+    # `pwsh -File` host, so the positional path must work through a child host.
+    $seePositional = Join-Path $evidence 'see-positional.png'
+    $seePositionalOut = @(& $hostExe -NoProfile -File $win see $hwnd $seePositional 2>&1)
+    if ($LASTEXITCODE -or -not (Test-Path -LiteralPath $seePositional) -or -not (Test-Path -LiteralPath ($seePositional + '.uia.json'))) {
+        throw "pwsh -File see <hwnd> <path> 失败：$($seePositionalOut -join ' ')"
+    }
+    Write-Output 'see-positional: pwsh -File PASS'
 
     & $win clickin $hwnd 0.5 0.5 --dry
     if ($LASTEXITCODE) { throw "clickin --dry exit=$LASTEXITCODE" }

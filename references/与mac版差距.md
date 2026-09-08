@@ -24,13 +24,15 @@
 | 横向滚动 | `scrollin --horizontal` → `MOUSEEVENTF_HWHEEL`，仍受 200 步限制 |
 | COM 作为 L0 | `probe.ps1` 只读 LocalServer32/TypeLib，不实例化；路径建议写入 L0 |
 | SKILL 正文体积 | 压到 ≤6k 字符；细则整段落入 references |
+| 空图判定不能只靠像素 | 内容区/整帧两个桶数进收据；`see` 用 UIA 空 Document/Edit 解释空白文档；`shotfg` 不为空文档借前台 |
+| RichEdit/Document 类编辑器的 L1 写 | worker 动作元素含 Document，`first` 兜底 Document(ValuePattern)；记事本 11 全链路回归 |
 | app 经验回流与版本自检 | `app档案.md`、30 天静默版本检查 |
 
 ## 仍缺少或样本不足
 
 | 优先级 | 差距 | 当前状态 / 完成标准 |
 |---|---|---|
-| P0 | 真实 app 档案覆盖不足 | 完整可重放档案仍是计算器 11.x。Excel 只有只读 COM。WorkBuddy 已验证：`--background` 不抢前台、主窗 PrintWindow 可用、UIA 空树、本地端口非 CDP。剪映本轮只到「环境检测」Qt 弹窗（PrintWindow 有图，screen 被其它窗挡住）；编辑器主窗未出现。Blender 未装。仍缺可逆写回归。 |
+| P0 | 真实 app 档案覆盖不足 | 完整可重放档案两个：计算器 11.x（Invoke）、记事本 11.x（Document ValuePattern 可逆写 + 两种状态指示器）。Excel 只有只读 COM。WorkBuddy 已验证：`--background` 不抢前台、主窗 PrintWindow 可用、UIA 空树、本地端口非 CDP。剪映本轮只到「环境检测」Qt 弹窗；编辑器主窗未出现。Blender 未装。仍缺 Chromium 可重放写档案和非 Store 的 Win32/WPF 样本。 |
 | P1 | 面向用户的真实案例与视觉素材不足 | Mac 版有 Blender/桌面客户端案例、GIF 和架构图；Windows 版目前重工程验证、轻展示。需要经脱敏的 Windows 原生/UIA/CDP 案例与架构图，但不能拿测试 fixture 冒充生产案例。 |
 | P1 | 单 app 经验的广度不足 | Mac 档案覆盖多个 Electron 和原生 app；Windows 需要随真实任务渐进积累，不能凭框架名称推断 UIA/CDP/截图一定可用。 |
 | P2 | 翻车过程文档尚未独立沉淀 | 原理、故障、证据、app 档案已拆分，但没有对应 `踩坑实录.md`。只有出现可复现且不能编码消除的教训时再补，避免复制 Mac 结论。 |
@@ -44,5 +46,5 @@ Mac 版可以先尝试向指定 PID 投递合成事件，失败后再借焦点�
 ## 下一步顺序
 
 1. 在不复用用户已打开实例的前提下，补一个真实 Chromium/WebView 档案回归。
-2. 再补一个常见 Win32/WPF app 的只读 + 可逆写回归。
+2. 再补一个非 Store 分发的 Win32/WPF app 只读 + 可逆写回归（记事本 11 已覆盖打包桌面 app）。
 3. 最后处理案例素材。

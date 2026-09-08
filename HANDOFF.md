@@ -22,7 +22,7 @@
 - PowerShell 7 + Node.js 24 是当前开发/CI 基线；Node.js 22+ 属支持范围。
 - `scripts/HuWin.dll` 是生成物，不提交；`win.ps1` 会在缺失或源码更新时重编译。
 - 收据 schema 已统一为 `win-use-master/receipt-v1`、`win-use-master/uia-map-v1`、`win-use-master/action-receipt-v1`。
-- 完整可重放档案仍是计算器 11.x。WorkBuddy 5.4.2 已做 `--background` + 只读截图/UIA（空树、无 CDP）。剪映 10.4.0 本轮只见到 VEDetector「环境检测」弹窗。Blender 未安装。证据图不入库。
+- 完整可重放档案有两个：计算器 11.x（UWP 宿主 + InvokePattern）和记事本 11.x（打包桌面 app + Document ValuePattern 可逆写）。WorkBuddy 5.4.2 已做 `--background` + 只读截图/UIA（空树、无 CDP）。剪映 10.4.0 本轮只见到 VEDetector「环境检测」弹窗。Blender 未安装。证据图不入库。
 
 ## 3. 代码地图
 
@@ -72,6 +72,8 @@
 - `PrintWindow` 有 2.5 秒看门狗，超时不得迟到覆盖目标文件。
 - sibling recovery 只允许几何近似且有进程血缘的窗口；收据保留请求窗口和实际渲染窗口身份。
 - `shotfg` 要求两张连续非空稳定帧；它仍不是桌面合成截图。
+- 判空只看裁掉边框后的内容区；内容区单色时收据另记 `frameColorBuckets`。空文档和黑壳窗口在像素上不可区分（内容区 1 桶、整帧约 20 桶），所以不得靠阈值“修好”它：`see` 用 UIA 空 Document/Edit 解释，`shotfg` 在 UIA 读到空文档且没有非空文本控件时不借前台。
+- UIA 动作元素包含 Document；`first` 先 Edit，无 Edit 时兜底带 ValuePattern 的 Document。Chromium 页面 Document 会被列出，但 SetValue 会因无 ValuePattern 被拒。
 - `screen` 才是桌面合成；`--window` 必须在当前桌面且未最小化。裁剪后的图不得当作 `@` 坐标参考。
 - `open --background` 不得假装一定不抢前台；必须回读。禁止用 `PostMessage` 或注入去做“后台启动”。
 - `scrollin --horizontal` 与纵向共用 200 步上限。
@@ -112,13 +114,14 @@ pwsh -NoProfile -File tests/smoke.ps1 -RequireCoordinate
 
 运行期间不要操作键鼠。Windows Foreground Lock 安全拒绝时退出码 2，不应改测试去绕过。
 
-真实计算器回归：
+真实 app 档案回归：
 
 ```powershell
 pwsh -NoProfile -File tests/calculator-profile.ps1
+pwsh -NoProfile -File tests/notepad-profile.ps1
 ```
 
-该测试发现计算器原本已打开时会拒绝运行；不要关闭用户已有实例。测试自己启动时会执行 `1+2=3`、恢复 0 并关闭测试实例。
+两者发现目标原本已打开时会拒绝运行；不要关闭用户已有实例。计算器测试执行 `1+2=3`、恢复 0 并关闭。记事本测试还会拒绝向恢复出的会话写入（多标签、已修改或非空文档），写入后清空再关闭；记事本 11 关闭已修改标签不弹提示而是留到下次会话，因此失败路径同样先清空。
 
 云 CI 只运行解析、构建、CDP owner 和无头 Edge 收据/超时测试。GitHub runner 没有可信的用户交互桌面，因此不得把 L2、截图/UIA fixture 或计算器测试塞进 CI 后宣称通过。
 
@@ -136,7 +139,7 @@ pwsh -NoProfile -File tests/calculator-profile.ps1
 ## 8. 当前待办
 
 1. P0：补一个真实 Chromium/WebView 桌面 app 的可重放档案；必须使用独立测试实例或明确授权的数据，不能拿普通浏览器或无头 fixture 冒充生产案例。
-2. P0：补一个常见 Windows 原生 app 的只读 + 可逆写档案，覆盖版本漂移和重定位规则。
+2. P1：再补一个非 Store 的 Win32/WPF app 只读 + 可逆写档案（记事本 11 已覆盖打包桌面 app + Document 路径，但它仍是 Store 分发）。
 3. P1：制作经脱敏的真实 Windows 案例和架构图。
 4. P2：把本项目特有、可复现且不能编码消除的失败过程整理进 `踩坑实录.md`；不要复制 Mac 结论凑文档。
 
@@ -146,5 +149,7 @@ pwsh -NoProfile -File tests/calculator-profile.ps1
 - 发现 `WebView2Loader.dll` 不等于开放了 CDP；发现 Electron 也不等于存在调试端口。
 - UIA 列出 ValuePattern 不等于框架内部 state 已更新；必须读回状态或业务副作用。
 - `PrintWindow` API 成功不等于图像完整、新鲜或等同用户屏幕。
+- “内容区接近纯色”不等于截图失败：空文档、空画布与黑壳窗口像素上一样；看 `frameColorBuckets` 和 UIA 文本控件再下结论。
+- `see --out` 在 `pwsh -File` 下会在参数绑定阶段失败（二义的 `-Out*` 前缀）；文档和脚本都用位置参数路径。
 - HWND、端口、UIA/CDP ref、坐标和界面文案都是易腐信息，不得写成通用常量。
 

@@ -136,6 +136,25 @@ public class HuWin
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public uint cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public uint dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public ushort wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public uint dwProcessId, dwThreadId;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct RTL_OSVERSIONINFO
     {
         public uint dwOSVersionInfoSize;
@@ -198,6 +217,7 @@ public class HuWin
     [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll", EntryPoint = "GetTickCount64")] private static extern ulong NativeGetTickCount64();
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool CreateProcess(string applicationName, StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags, IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr GetModuleHandle(string moduleName);
     [DllImport("advapi32.dll", SetLastError = true)] public static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)] public static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, uint length, out uint returnLength);
@@ -230,6 +250,7 @@ public class HuWin
     public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
     public const uint MOUSEEVENTF_WHEEL = 0x0800;
+    public const uint MOUSEEVENTF_HWHEEL = 0x1000;
     public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
     public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
     public const uint KEYEVENTF_KEYUP = 0x0002;
@@ -247,6 +268,8 @@ public class HuWin
     private const int SW_SHOW = 5;
     private const int SW_RESTORE = 9;
     private const int SW_SHOWNOACTIVATE = 4;
+    private const int SW_SHOWMINNOACTIVE = 7;
+    private const uint STARTF_USESHOWWINDOW = 0x00000001;
     private const int SM_CXSCREEN = 0;
     private const int SM_CYSCREEN = 1;
     private const int SM_XVIRTUALSCREEN = 76;
@@ -977,6 +1000,30 @@ public class HuWin
         return !IsIconic(window);
     }
 
+    // Launches an executable while asking its first window not to take activation
+    // (STARTF_USESHOWWINDOW + SW_SHOWNOACTIVATE / SW_SHOWMINNOACTIVE). The request is
+    // advisory: shells that call ShowWindow(SW_SHOWNORMAL) themselves still activate,
+    // so callers must read GetForegroundWindow back afterwards and report honestly.
+    // Returns the new PID, or 0 when CreateProcess failed.
+    public static int StartProcessNoActivate(string exePath, string arguments, string workingDirectory, bool minimized)
+    {
+        if (String.IsNullOrEmpty(exePath) || !File.Exists(exePath)) return 0;
+        var startup = new STARTUPINFO();
+        startup.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
+        startup.dwFlags = STARTF_USESHOWWINDOW;
+        startup.wShowWindow = (ushort)(minimized ? SW_SHOWMINNOACTIVE : SW_SHOWNOACTIVATE);
+        var commandLine = new StringBuilder();
+        commandLine.Append('"').Append(exePath).Append('"');
+        if (!String.IsNullOrEmpty(arguments)) commandLine.Append(' ').Append(arguments);
+        string directory = String.IsNullOrEmpty(workingDirectory) ? Path.GetDirectoryName(exePath) : workingDirectory;
+        PROCESS_INFORMATION info;
+        bool started = CreateProcess(exePath, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0, IntPtr.Zero, directory, ref startup, out info);
+        if (!started) return 0;
+        if (info.hThread != IntPtr.Zero) CloseHandle(info.hThread);
+        if (info.hProcess != IntPtr.Zero) CloseHandle(info.hProcess);
+        return (int)info.dwProcessId;
+    }
+
     public static bool ActivateWindow(long hwnd)
     {
         return ActivateWindow(hwnd, 750);
@@ -986,6 +1033,14 @@ public class HuWin
     // It restores minimized windows, temporarily joins input queues, and uses one Alt
     // pulse only when the normal path failed. The actual foreground HWND is verified.
     public static bool ActivateWindow(long hwnd, int timeoutMs)
+    {
+        return ActivateWindow(hwnd, timeoutMs, true);
+    }
+
+    // allowAltPulse=false never injects the synthetic Alt tap. Use it when handing a
+    // stolen foreground back while the user may be typing: a stray Alt could open a
+    // menu in whatever window the keystrokes are landing in.
+    public static bool ActivateWindow(long hwnd, int timeoutMs, bool allowAltPulse)
     {
         IntPtr original = new IntPtr(hwnd);
         if (!IsWindow(original)) return false;
@@ -1031,6 +1086,8 @@ public class HuWin
             if (IsForegroundFor(root, target)) return true;
             Thread.Sleep(15);
         }
+
+        if (!allowAltPulse) return IsForegroundFor(root, target);
 
         // SetForegroundWindow is intentionally rate-limited by Windows. A synthetic Alt
         // tap is the least invasive conventional unlock and is only used after failure.
@@ -1088,6 +1145,13 @@ public class HuWin
 
     public static uint MouseWheel(int x, int y, int delta, int steps)
     {
+        return MouseWheel(x, y, delta, steps, false);
+    }
+
+    // horizontal=true sends MOUSEEVENTF_HWHEEL; positive delta scrolls right. Canvas and
+    // wide-table apps only react to a real wheel stream, not to scrollbar clicks.
+    public static uint MouseWheel(int x, int y, int delta, int steps, bool horizontal)
+    {
         if (!SetCursorPos(x, y) || steps == 0) return 0;
         if (steps < 0)
         {
@@ -1104,7 +1168,7 @@ public class HuWin
         {
             var input = new INPUT[1];
             input[0].type = INPUT_MOUSE;
-            input[0].u.m.dwFlags = MOUSEEVENTF_WHEEL;
+            input[0].u.m.dwFlags = horizontal ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL;
             input[0].u.m.mouseData = unchecked((uint)delta);
             sent += SendInput(1, input, Marshal.SizeOf(typeof(INPUT)));
             if (i + 1 < steps) Thread.Sleep(35);

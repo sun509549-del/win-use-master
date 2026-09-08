@@ -76,7 +76,8 @@ L0:
   本地端口: <发现方法、协议、认证；端口号按动态值处理>
   CDP: <默认开放 | 需 --remote-debugging-port | 被禁 | 未测>
   CDP target: <按 title/url/type 重新寻找的规则>
-  启动/重启风险: <是否会丢状态、是否有 launcher 吞参数>
+  COM: <ProgID / TypeLib 有无；是否实测只读连接；New-Object 会不会新起实例>
+  启动/重启风险: <是否会丢状态、是否有 launcher 吞参数；`--background` 是否被忽略>
 
 L1_UIA:
   总体: <可用 | 部分 | 不可用 | 未测>
@@ -104,6 +105,7 @@ L2_SendInput:
 L3_capture:
   PrintWindow_后台: <完整 | 缺硬件层 | 黑/空 | 旧帧 | 未测>
   PrintWindow_前台后重试: <改善 | 无改善 | 未测>
+  screen_合成: <窗口在当前桌面时是否与 PrintWindow 一致；遮挡情况>
   CDP_shot: <可用范围；是否只含 web 内容>
   壳窗口/渲染窗口: <如何区分>
   受保护内容: <如有，写明不可捕获>
@@ -160,6 +162,7 @@ L0:
   URL protocol: calculator://、ms-calculator://（仅确认 manifest 注册；路由未调用）
   本地端口: 无
   CDP: 未发现；包内出现 WebView2Loader.dll 只是静态信号，不足以证明可连接
+  COM: 未测
   启动/重启风险: 本轮由工具启动空白计算器；未测试有历史/内存状态时重启
 
 L1_UIA:
@@ -197,6 +200,47 @@ L3_capture:
 ```
 
 本轮证据只保留在受控临时目录并在收尾清理；可复现路径是 `tests/calculator-profile.ps1`，内部执行 `open(AUMID) → see → 从 map 按 AutomationId 取 ref → invoke → uiaread CalculatorResults → 恢复/关闭`。结论不依赖 HWND、PID 或短 ref。
+
+### Microsoft Excel · 16.0.20326.20132 · 只读探测 2026-09-08
+
+> 本条只来自 `probe.ps1 "Excel"`，**未启动、未实例化 COM、未截图、未写入**。不能据此点击或改用户工作簿。
+
+```yaml
+显示名: Excel
+实测日期: 2026-09-08
+版本: 16.0.20326.20132                     # 核对 2026-09-08
+安装形态: Win32 Click-to-Run（Office16）
+exe: C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE  # 核对 2026-09-08
+包标识/AUMID: Microsoft.Office.EXCEL.EXE.15
+架构: x64
+进程:
+  主进程: 本轮未运行 EXCEL.EXE
+  渲染/子进程判据: 安装目录下的 SDXHelper.exe 会被目录前缀算进“相关 PID”，不是 Excel 本体
+窗口: 本轮无 Excel 顶层窗口
+
+L0:
+  CLI: 未测（probe 不执行 --help）
+  URL protocol: 注册表出现 ms-excel:// → protocolhandler.exe；同目录还会列出 ms-word/ms-powerpoint/OneNote 等，因为匹配的是安装根而不是单 exe。未调用任何路由。
+  本地端口: 无（Excel 未运行）
+  CDP: 未发现；目录内有 WebView2Loader.dll，只是静态信号
+  COM: 有。Excel.Application / Excel.Application.16 → LocalServer32 `EXCEL.EXE /automation`；另有 Excel.Sheet.*、Excel.Chart.*。类型库 “Microsoft Excel 16.0 Object Library”。未执行 New-Object（会新起实例）。
+  启动/重启风险: `--background` 未测；COM 实例化可能弹出或隐藏启动 Excel，未授权前禁止
+
+L1_UIA: 未运行，未测
+L2_SendInput: 未测
+L3_capture: 未测
+
+验证:
+  本轮只验证“注册表能指向该 exe 的 COM 服务器”；不验证对象模型可写或能连上用户已打开的簿
+
+安全:
+  风险类别: 普通办公；用户工作簿可能含他人/未发布数据
+  停手点: 保存、另存为、发送、共享、宏
+
+已知坑:
+  - 2026-09-08 probe 把 Office16 目录下的 SDXHelper 算进相关进程，并扫到 Word/PowerPoint 的 protocol 与 typelib。选层时以 Excel.Application 为准，不要把同套件其它 ProgID 当成已验证的 Excel 接口。
+  - New-Object -ComObject Excel.Application 不是“连接当前窗口”；在用户已打开工作簿时尤其危险。
+```
 
 ## 五、如何写“可用”
 

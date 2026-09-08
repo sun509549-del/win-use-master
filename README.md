@@ -92,10 +92,10 @@ pwsh -NoProfile -File "$SKILL_DIR\scripts\probe.ps1" "notepad.exe"
 
 | 层 | 手段 | 默认用途 | 焦点 |
 |---|---|---|---|
-| **L0 结构接口** | CLI、URL protocol、本地端口、`cdp.js` | 首选读写路径 | 通常不借 |
+| **L0 结构接口** | CLI、COM、URL protocol、本地端口、`cdp.js` | 首选读写路径 | 通常不借 |
 | **L1 UIA 语义树** | `uia`、`uiaread`、`uiaset`、`invoke` | 标准控件读写与动作 | 通常不借 |
 | **L2 前台坐标** | `clickin`、`hoverin`、`scrollin`、`type`、`key`、`op` | 前两层不通时降级 | **必须借** |
-| **L3 像素** | `shot`、`shotfg`、CDP `shot` | 观察与逐步验证 | 后台优先，必要时借 |
+| **L3 像素** | `shot`、`shotfg`、`screen`、CDP `shot` | 观察与逐步验证 | 后台优先，必要时借 |
 
 ### L0：能不碰 GUI 就不碰
 
@@ -161,7 +161,9 @@ Windows `SendInput` 是全局输入流，不携带目标 PID/HWND。工具会短
 
 `shot` 使用带 2.5 秒看门狗的 `PrintWindow(PW_RENDERFULLCONTENT)`，窗口被遮挡时也**可能**拿到干净窗口图；超时不会把半张图覆盖到目标路径。若命中接近纯色的壳窗口，它只在“窗口几何近似相同且进程存在父子血缘”时尝试同位渲染 sibling，并把原/实际 HWND 写进收据。每张图还会记录 PID、窗口矩形、图像尺寸、DPI、图像到物理窗口的缩放、时间、方法和 SHA-256。修改型命令的 after 收据进一步保存脱敏 action、before/after 哈希、像素 effect、语义读回与焦点时长，形成可追溯链；不保存输入正文。对 DPI-unaware app，PNG 可能是 app 的逻辑像素尺寸；`@截图` 换算与收据会保留它到物理窗口的映射。
 
-`PrintWindow` 是请目标 app 自己绘制，不是桌面合成真相。最小化、硬件加速、视频、游戏、受保护内容和某些 Chromium 窗口可能返回黑图、空图或旧帧，即使 API 返回成功。`shotfg` 只是在后台图接近纯色时短暂借前台，并在有限窗口内等待两张连续非空帧；它不是屏幕区域截图，也不保证得到有效内容。若目标进程树已有 CDP，空图诊断会给出准确端口和替代命令。
+`PrintWindow` 是请目标 app 自己绘制，不是桌面合成真相。最小化、硬件加速、视频、游戏、受保护内容和某些 Chromium 窗口可能返回黑图、空图或旧帧，即使 API 返回成功。`shotfg` 只是在后台图接近纯色时短暂借前台，并在有限窗口内等待两张连续非空帧。窗口在当前桌面时，用 `screen --window` 做桌面合成交叉验证（图中含遮挡物）。若目标进程树已有 CDP，空图诊断会给出准确端口和替代命令。
+
+`open --background` 请求首个窗口不激活，属 best effort；工具会回读前台是否被抢。`scrollin --horizontal` 发送横向滚轮。`probe.ps1` 会只读枚举指向该 exe 的 COM LocalServer32/TypeLib。
 
 ## 安全模型
 
@@ -200,6 +202,7 @@ win.ps1 windows [关键词] [--all]
 win.ps1 see <hwnd|pid|owner> [--out path]
 win.ps1 shot <hwnd|owner> <path>
 win.ps1 shotfg <hwnd|owner> <path>         # 后台近空图时才借前台重试 PrintWindow
+win.ps1 screen <path> [--window <target>] [--region x y w h]  # 桌面合成，交叉验证陈旧帧
 win.ps1 uia <hwnd|pid|owner>
 win.ps1 uiaread <hwnd|pid|owner> [名称或 AutomationId 过滤]
 win.ps1 idle
@@ -218,7 +221,7 @@ win.ps1 invoke <target> <eN> [@uia.json]
 ```text
 win.ps1 clickin <target> <x> <y> [@shot.png] [shot out.png] [--dry]
 win.ps1 hoverin <target> <x> <y> [@shot.png] [holdms] [shot out.png]
-win.ps1 scrollin <target> <x> <y> <delta> [steps] [@shot.png]
+win.ps1 scrollin <target> <x> <y> <delta> [steps] [--horizontal] [@shot.png]
 win.ps1 type <target> <text> [--replace]
 win.ps1 key <target> <Enter|Ctrl+A|Ctrl+Shift+S> [--force]
 win.ps1 op <target> <x> <y> <text> [@shot.png] [--replace] [shot out.png]
@@ -229,8 +232,8 @@ win.ps1 op <target> <x> <y> <text> [@shot.png] [--replace] [shot out.png]
 ### 应用、状态与 CDP
 
 ```text
-win.ps1 open <显示名|进程名|exe路径> [--cdp port] [--relaunch] [--dry]
-win.ps1 hud [毫秒] [文案]
+win.ps1 open <显示名|进程名|exe路径> [--cdp port] [--relaunch] [--background] [--dry]
+win.ps1 hud [毫秒] [文案] [corner|glow|plain]
 probe.ps1 <显示名|进程名|exe/lnk/目录路径>
 
 node "$SKILL_DIR/scripts/cdp.js" <port> list

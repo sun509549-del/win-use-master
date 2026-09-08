@@ -259,7 +259,9 @@ function Get-HuSiblingWindows($Window) {
 function Get-HuProcessFamilyIds([uint32] $RootPid) {
     $ids = [Collections.Generic.HashSet[uint32]]::new()
     [void]$ids.Add($RootPid)
-    try { $rows = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop) } catch { return $ids }
+    # -NoEnumerate keeps the HashSet intact; a plain return unrolls it, and a
+    # single-PID family would then arrive as a bare uint32 without .Contains().
+    try { $rows = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop) } catch { Write-Output -NoEnumerate $ids; return }
     $changed = $true
     while ($changed) {
         $changed = $false
@@ -270,7 +272,7 @@ function Get-HuProcessFamilyIds([uint32] $RootPid) {
             }
         }
     }
-    return $ids
+    Write-Output -NoEnumerate $ids
 }
 
 function Find-HuCdpPort($Window) {
@@ -390,7 +392,7 @@ function Invoke-BackgroundShot($Window, [string] $Path, [switch] $NoReceipt, [sw
         }
         $cdpPort = Find-HuCdpPort $Window
         $cdpHint = if ($null -ne $cdpPort) { " 已发现目标进程树的 CDP 端口 $cdpPort；改用: node `"$PSScriptRoot\cdp.js`" $cdpPort shot auto <路径>。" } else { '' }
-        Stop-Hu "后台截图失败：窗口可能已关闭、进入安全桌面，或拒绝/超时 PrintWindow。目标 $(Format-Hwnd $Window.Hwnd)。$cdpHint" 1
+        Stop-Hu "后台截图失败：窗口可能已关闭、进入安全桌面，或拒绝/超时 PrintWindow。目标 $(Format-Hwnd $Window.Hwnd)。$cdpHint$(Get-ScreenCrossCheckHint $Window)" 1
     }
     if ($colors -lt 0) { $colors = [HuWin]::ColorCount($full, 160) }
     $receipt = New-Receipt $selectedWindow $full $size.Width $size.Height $colors $method
@@ -401,6 +403,157 @@ function Invoke-BackgroundShot($Window, [string] $Path, [switch] $NoReceipt, [sw
     if (-not $NoReceipt) { $sidecar = Save-Receipt $receipt $full }
     $cdpPort = if ($colors -lt 6) { Find-HuCdpPort $selectedWindow } else { $null }
     return [pscustomobject]@{ Window = $selectedWindow; RecoveredFrom = $recoveredFrom; CdpPort = $cdpPort; Path = $full; Width = $size.Width; Height = $size.Height; Colors = $colors; Receipt = $receipt; Sidecar = $sidecar }
+}
+
+# PrintWindow asks the app to paint itself; it can hand back a stale or black
+# surface while the user sees a live window. When the window is actually on the
+# current desktop, the desktop composition is the only independent cross-check.
+function Get-ScreenCrossCheckHint($Window) {
+    if ($null -eq $Window -or $Window.Iconic -or $Window.Cloaked -or -not $Window.Visible) { return '' }
+    return " 窗口在当前桌面且可见时，可用 win.ps1 screen <路径> --window $(Format-Hwnd $Window.Hwnd) 做桌面合成交叉验证（含遮挡物）。"
+}
+
+function Get-ScreenOcclusion($Window) {
+    # Center plus four inner quadrant points. WindowAtPoint returns the root
+    # window under each screen point; anything but the target is an occluder.
+    $samples = @(@(0.5, 0.5), @(0.25, 0.25), @(0.75, 0.25), @(0.25, 0.75), @(0.75, 0.75))
+    $blocked = 0
+    $blockers = [Collections.Generic.List[string]]::new()
+    foreach ($sample in $samples) {
+        $sx = [int]($Window.L + $sample[0] * $Window.W); $sy = [int]($Window.T + $sample[1] * $Window.H)
+        $top = [HuWin]::WindowAtPoint($sx, $sy)
+        if ($null -eq $top) { $blocked++; continue }
+        if ($top.Hwnd -ne $Window.Hwnd) {
+            $blocked++
+            $label = "$($top.Owner) $(Format-Hwnd $top.Hwnd)"
+            if (-not $blockers.Contains($label)) { $blockers.Add($label) }
+        }
+    }
+    return [ordered]@{ samples = $samples.Count; blocked = $blocked; blockers = @($blockers) }
+}
+
+# Desktop composition capture (BitBlt via CopyFromScreen). Unlike PrintWindow it
+# shows what the user sees, including occluders, notifications and any HUD that
+# was made capturable. Region is clipped to the virtual screen; never activates.
+function Invoke-ScreenShot([string] $Path, $Window, $Region) {
+    if ([HuWin]::ScreenLocked()) { Stop-Hu 'refused: 当前是锁屏/安全桌面，桌面合成截图不可信；CDP 仍可用。' 2 }
+    $virtual = [HuWin]::GetVirtualScreen()
+    $occlusion = $null
+    if ($null -ne $Window) {
+        if ($Window.Iconic) { Stop-Hu "refused: 目标窗口 $(Format-Hwnd $Window.Hwnd) 已最小化，屏幕上没有它的像素；改 shot/CDP，或请用户恢复窗口。" 2 }
+        if ($Window.Cloaked) { Stop-Hu "refused: 目标窗口 $(Format-Hwnd $Window.Hwnd) 在其它虚拟桌面或被 DWM cloaked；桌面合成截图只会拍到当前桌面。" 2 }
+        if (-not $Window.Visible) { Stop-Hu "refused: 目标窗口 $(Format-Hwnd $Window.Hwnd) 不可见。" 2 }
+        $Region = [ordered]@{ X = $Window.L; Y = $Window.T; W = $Window.W; H = $Window.H }
+        $occlusion = Get-ScreenOcclusion $Window
+    } elseif ($null -eq $Region) {
+        $Region = [ordered]@{ X = $virtual.X; Y = $virtual.Y; W = $virtual.W; H = $virtual.H }
+    }
+    if ($Region.W -le 0 -or $Region.H -le 0) { Stop-Hu 'refused: 截图区域宽高必须大于 0。' 2 }
+    $left = [Math]::Max([int]$Region.X, $virtual.L); $top = [Math]::Max([int]$Region.Y, $virtual.T)
+    $right = [Math]::Min([int]$Region.X + [int]$Region.W, $virtual.R); $bottom = [Math]::Min([int]$Region.Y + [int]$Region.H, $virtual.B)
+    if ($right -le $left -or $bottom -le $top) {
+        Stop-Hu "refused: 区域 $($Region.X),$($Region.Y) $($Region.W)x$($Region.H) 完全在虚拟屏幕 $($virtual.X),$($virtual.Y) $($virtual.W)x$($virtual.H) 之外。" 2
+    }
+    $clipped = ($left -ne [int]$Region.X) -or ($top -ne [int]$Region.Y) -or (($right - $left) -ne [int]$Region.W) -or (($bottom - $top) -ne [int]$Region.H)
+    $full = Get-AbsolutePath $Path
+    Ensure-Parent $full
+    if (Test-Path -LiteralPath $full) { [IO.File]::Delete($full) }
+    $size = [HuWin]::ShotScreen($full, $left, $top, $right - $left, $bottom - $top)
+    if ($null -eq $size -or -not (Test-Path -LiteralPath $full) -or (Get-Item -LiteralPath $full).Length -eq 0) {
+        Stop-Hu '桌面合成截图失败：CopyFromScreen 没有产出文件；可能是远程会话断开或显示驱动拒绝。' 1
+    }
+    $colors = [HuWin]::ColorCount($full, 160)
+    $receipt = [ordered]@{
+        schema = 'win-use-master/receipt-v1'
+        capturedAt = [DateTimeOffset]::Now.ToString('o')
+        method = 'BitBlt desktop composition (CopyFromScreen)'
+        composition = $true
+        image = $full
+        sha256 = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash.ToLowerInvariant()
+        imageSize = @{ width = $size.Width; height = $size.Height }
+        region = [ordered]@{ x = $left; y = $top; width = $right - $left; height = $bottom - $top; requested = [ordered]@{ x = [int]$Region.X; y = [int]$Region.Y; width = [int]$Region.W; height = [int]$Region.H }; clipped = $clipped }
+        virtualScreen = @{ x = $virtual.X; y = $virtual.Y; width = $virtual.W; height = $virtual.H }
+        screens = @([HuWin]::AllScreens() | ForEach-Object { [ordered]@{ x = $_.X; y = $_.Y; width = $_.W; height = $_.H; primary = $_.Primary } })
+        colorBuckets = $colors
+    }
+    if ($null -ne $Window) {
+        $receipt['window'] = @{
+            hwnd = Format-Hwnd $Window.Hwnd; pid = $Window.Pid; owner = $Window.Owner
+            title = $Window.Title; class = $Window.Cls
+            rect = @{ x = $Window.L; y = $Window.T; width = $Window.W; height = $Window.H }
+            minimized = $Window.Iconic; cloaked = $Window.Cloaked
+        }
+        $receipt['occlusion'] = $occlusion
+        # Only an unclipped window crop is 1:1 with the window; a clipped image
+        # must not be reused as an @reference for coordinates.
+        $receipt['imageToWindowScale'] = if ($clipped) { $null } else { @{ x = 1.0; y = 1.0 } }
+    }
+    $sidecar = Save-Receipt $receipt $full
+    return [pscustomobject]@{ Path = $full; Width = $size.Width; Height = $size.Height; Colors = $colors; Clipped = $clipped; Occlusion = $occlusion; Left = $left; Top = $top; Receipt = $receipt; Sidecar = $sidecar }
+}
+
+# Launch helper. -NoActivate asks the first window not to take activation; that is
+# advisory, so open reads the foreground back through Get-HuLaunchReport.
+function Start-HuProcess([string] $Path, [string] $Arguments, [switch] $NoActivate) {
+    if ($NoActivate) {
+        $newPid = [HuWin]::StartProcessNoActivate($Path, $Arguments, '', $false)
+        if ($newPid -le 0) { Stop-Hu "启动失败: $Path（CreateProcess 未成功，请检查路径与权限）" 1 }
+        try { return Get-Process -Id $newPid -ErrorAction Stop }
+        catch { return [pscustomobject]@{ Id = $newPid; HasExited = $true; Path = $Path } }
+    }
+    if ($Arguments) { return Start-Process -FilePath $Path -ArgumentList $Arguments -PassThru }
+    return Start-Process -FilePath $Path -PassThru
+}
+
+# Watches a freshly launched process. STARTF_USESHOWWINDOW is advisory, so the
+# report says whether the app took the foreground anyway; if it did, the user's
+# previous window is handed back within one poll (~100 ms) rather than after the
+# app finishes loading. The hand-back never injects the Alt unlock while the
+# user is typing; a plain SetForegroundWindow that fails is reported as such.
+function Get-HuLaunchReport([string] $Path, [int] $LaunchedPid, [IntPtr] $PreviousForeground, [int] $WaitSeconds = 8) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
+    $window = $null
+    $family = [Collections.Generic.HashSet[uint32]]::new()
+    [void]$family.Add([uint32]$LaunchedPid)
+    $stolen = $false; $restored = $null; $restoreAttempts = 0
+    $stableHits = 0
+    $nextFamilyRefresh = [DateTime]::MinValue
+    $previousValid = ($PreviousForeground -ne [IntPtr]::Zero) -and [HuWin]::IsWindow($PreviousForeground)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ([DateTime]::UtcNow -ge $nextFamilyRefresh) {
+            # Single-instance apps hand off to an existing process and exit, and
+            # Squirrel/Store launchers spawn the real exe; match by exe path too.
+            $familyNow = Get-HuProcessFamilyIds ([uint32]$LaunchedPid)
+            foreach ($id in $familyNow) { [void]$family.Add([uint32]$id) }
+            foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
+                try { if ($proc.Path -and $proc.Path -ieq $Path) { [void]$family.Add([uint32]$proc.Id) } } catch { }
+            }
+            $nextFamilyRefresh = [DateTime]::UtcNow.AddMilliseconds(700)
+        }
+        $windows = Get-HuWindows
+        $foreground = [HuWin]::ForegroundWindow().ToInt64()
+        $foregroundInfo = @($windows | Where-Object { $_.Hwnd -eq $foreground } | Select-Object -First 1)
+        if ($foregroundInfo.Count -and $family.Contains([uint32]$foregroundInfo[0].Pid)) {
+            $stolen = $true
+            if ($previousValid -and $restoreAttempts -lt 3) {
+                $restoreAttempts++
+                $userIdle = [HuWin]::UserIdleSeconds() -ge $script:IdleThresholdSeconds
+                $restored = [HuWin]::ActivateWindow($PreviousForeground.ToInt64(), 400, $userIdle)
+            } elseif ($null -eq $restored) { $restored = $false }
+        }
+        $candidates = @($windows | Where-Object { $family.Contains([uint32]$_.Pid) -and -not (Test-JunkWindow $_) } |
+            Sort-Object @{ Expression = { $_.W * $_.H }; Descending = $true })
+        if ($candidates.Count) {
+            $window = $candidates[0]
+            # Two consecutive sightings catch splash → main window transitions
+            # that activate twice; then stop watching.
+            $stableHits++
+            if ($stableHits -ge 2 -and (-not $stolen -or $restored)) { break }
+        } else { $stableHits = 0 }
+        Start-Sleep -Milliseconds 100
+    }
+    $state = if (-not $stolen) { 'kept' } elseif ($restored) { 'stolen-restored' } else { 'stolen-unrestored' }
+    return [pscustomobject]@{ Window = $window; ForegroundStolen = $stolen; Restored = $restored; RestoreAttempts = $restoreAttempts; Foreground = $state; FamilyCount = $family.Count }
 }
 
 # Verification should never turn a completed semantic action into a reported
@@ -701,6 +854,7 @@ win-use-master — Windows 原生 app 的分层操控与可复现取证
   win.ps1 see <hwnd|pid|owner> [--out path]
   win.ps1 shot <hwnd|owner> <path>
   win.ps1 shotfg <hwnd|owner> <path>          # 后台空图才短暂借焦点
+  win.ps1 screen <path> [--window <target>] [--region x y w h]   # 桌面合成截图，交叉验证 PrintWindow
   win.ps1 uia <hwnd|pid|owner>
   win.ps1 uiaread <hwnd|pid|owner> [名称或 AutomationId 过滤]
   win.ps1 idle | frontmost
@@ -712,18 +866,20 @@ win-use-master — Windows 原生 app 的分层操控与可复现取证
 坐标写入（会短暂借焦点，默认先等用户空闲）:
   win.ps1 clickin <target> <x> <y> [@shot.png] [shot out.png] [--dry]
   win.ps1 hoverin <target> <x> <y> [@shot.png] [holdms] [shot out.png]
-  win.ps1 scrollin <target> <x> <y> <delta> [steps]
+  win.ps1 scrollin <target> <x> <y> <delta> [steps] [--horizontal]
   win.ps1 type <target> <text> [--replace]
   win.ps1 key <target> <Enter|Ctrl+A|Ctrl+Shift+S> [--force]
   win.ps1 op <target> <x> <y> <text> [@shot.png] [--replace] [shot out.png]
 
 应用与状态:
-  win.ps1 open <显示名|进程名|exe路径> [--cdp port] [--relaunch] [--dry]
+  win.ps1 open <显示名|进程名|exe路径> [--cdp port] [--relaunch] [--background] [--dry]
   win.ps1 hud [毫秒] [文案] [corner|glow|plain]
   probe.ps1 <显示名|进程名|exe路径>
   node cdp.js <port> list|snapshot|find|wait|mouse|insert|press|shot|eval|act
 
 坐标：≤1 是归一化；>1 是窗口内物理像素；追加 @截图 使用图上像素；也可 eN@uia.json。
+screen 是桌面合成截图（含遮挡物/通知），只用于交叉验证与全屏取证；--region 用虚拟屏幕物理像素。
+open --background 请求首个窗口不激活（best effort），并回读前台是否被抢。
 退出码：0 成功；1 失败；2 被安全闸拒绝或结果未知。退出码 2 绝不能当成功。
 '@
 }
@@ -755,8 +911,41 @@ switch ($Command.ToLowerInvariant()) {
         Write-Output ("shot {0} -> {1} {2}x{3}px colors={4}{5} receipt={6}" -f (Format-Hwnd $result.Window.Hwnd), $result.Path, $result.Width, $result.Height, $result.Colors, $recovery, $result.Sidecar)
         if ($result.Colors -lt 6) {
             $route = if ($null -ne $result.CdpPort) { "已发现目标 CDP 端口 $($result.CdpPort)：node `"$PSScriptRoot\cdp.js`" $($result.CdpPort) shot auto <路径>" } else { '改 shotfg；Chromium 系先用 probe 查 CDP' }
-            Write-Output "effect=unverifiable ⚠️ 图像接近纯色；可能是应用拒绝后台渲染，也可能窗口本来就是空白。$route。"
+            Write-Output "effect=unverifiable ⚠️ 图像接近纯色；可能是应用拒绝后台渲染，也可能窗口本来就是空白。$route。$(Get-ScreenCrossCheckHint $result.Window)"
         }
+        break
+    }
+
+    'screen' {
+        if (-not $CommandArgs.Count -or $CommandArgs[0].StartsWith('--')) { Stop-Hu '用法: win.ps1 screen <路径> [--window <hwnd|owner>] [--region <x> <y> <w> <h>]' }
+        $windowIndex = [Array]::IndexOf($CommandArgs, '--window')
+        $regionIndex = [Array]::IndexOf($CommandArgs, '--region')
+        if ($windowIndex -ge 0 -and $regionIndex -ge 0) { Stop-Hu '--window 与 --region 只能选一个。' }
+        $w = $null; $region = $null
+        if ($windowIndex -ge 0) {
+            if ($windowIndex + 1 -ge $CommandArgs.Count) { Stop-Hu '--window 需要 <hwnd|owner>。' }
+            $w = Resolve-HuWindow $CommandArgs[$windowIndex + 1]
+        } elseif ($regionIndex -ge 0) {
+            if ($regionIndex + 4 -ge $CommandArgs.Count) { Stop-Hu '--region 需要 <x> <y> <w> <h>，单位是虚拟屏幕物理像素。' }
+            $numbers = foreach ($offset in 1..4) {
+                $v = 0
+                if (-not [int]::TryParse($CommandArgs[$regionIndex + $offset], [ref]$v)) { Stop-Hu "--region 参数必须是整数，收到: $($CommandArgs[$regionIndex + $offset])" }
+                $v
+            }
+            $region = [ordered]@{ X = $numbers[0]; Y = $numbers[1]; W = $numbers[2]; H = $numbers[3] }
+        }
+        $result = Invoke-ScreenShot $CommandArgs[0] $w $region
+        $clipNote = if ($result.Clipped) { ' clipped=true（区域超出屏幕已裁剪，不要用作 @坐标参考）' } else { '' }
+        Write-Output ("screen -> {0} {1}x{2}px colors={3} region={4},{5} {1}x{2}{6} receipt={7}" -f $result.Path, $result.Width, $result.Height, $result.Colors, $result.Left, $result.Top, $clipNote, $result.Sidecar)
+        if ($null -ne $w) {
+            $occ = $result.Occlusion
+            Write-Output "窗口: $(Format-Window $w)"
+            if ($occ.blocked -gt 0) {
+                Write-Output "⚠️ 目标有 $($occ.blocked)/$($occ.samples) 个采样点被「$($occ.blockers -join '」「')」盖住；图中这些区域是遮挡物，不是目标内容。"
+            } else { Write-Output "遮挡采样 $($occ.samples)/$($occ.samples) 全部命中目标；此图可作为 PrintWindow 结果是否陈旧的交叉验证基准。" }
+        }
+        if ($result.Colors -lt 6) { Write-Output 'effect=unverifiable ⚠️ 图像接近纯色；可能是受保护内容、独占全屏或远程会话断开。' }
+        Write-Output '说明: 桌面合成截图包含区域内一切可见内容（通知、其它窗口、可捕获的 HUD），公开前先脱敏。'
         break
     }
 
@@ -785,7 +974,7 @@ switch ($Command.ToLowerInvariant()) {
             Write-Output "窗口: $(Format-Window $w) receipt=$sidecar"
             if ($shot.Colors -lt 6) {
                 $route = if ($null -ne $shot.CdpPort) { "已发现 CDP $($shot.CdpPort)，直接用 cdp.js shot" } else { '可改 shotfg；Chromium/Electron 先用 probe 查 CDP' }
-                Write-Output "⚠️ 后台图接近纯色：$route。"
+                Write-Output "⚠️ 后台图接近纯色：$route。$(Get-ScreenCrossCheckHint $w)"
             }
             if (-not $elements.Count) { Write-Output 'UIA 元素表: 无。可能 app 不暴露、窗口在其它虚拟桌面，或 Chromium 树断开；改 CDP/坐标。' }
             else {
@@ -1017,30 +1206,33 @@ switch ($Command.ToLowerInvariant()) {
     }
 
     'scrollin' {
-        if ($CommandArgs.Count -lt 4) { Stop-Hu '用法: win.ps1 scrollin <target> <x> <y> <delta> [steps] [@截图]' }
-        $w = Resolve-HuWindow $CommandArgs[0]
-        $ref = Get-ReferenceToken ($CommandArgs | Select-Object -Skip 4)
-        $point = Resolve-Point $w $CommandArgs[1] $CommandArgs[2] $ref
-        $delta = [int]$CommandArgs[3]; $steps = if ($CommandArgs.Count -gt 4 -and $CommandArgs[4] -match '^-?\d+$') { [int]$CommandArgs[4] } else { 3 }
+        $horizontal = ($CommandArgs -contains '--horizontal') -or ($CommandArgs -contains '--dx')
+        $scrollArgs = @($CommandArgs | Where-Object { $_ -notin @('--horizontal', '--dx') })
+        if ($scrollArgs.Count -lt 4) { Stop-Hu '用法: win.ps1 scrollin <target> <x> <y> <delta> [steps] [--horizontal] [@截图]' }
+        $w = Resolve-HuWindow $scrollArgs[0]
+        $ref = Get-ReferenceToken ($scrollArgs | Select-Object -Skip 4)
+        $point = Resolve-Point $w $scrollArgs[1] $scrollArgs[2] $ref
+        $delta = [int]$scrollArgs[3]; $steps = if ($scrollArgs.Count -gt 4 -and $scrollArgs[4] -match '^-?\d+$') { [int]$scrollArgs[4] } else { 3 }
+        $axis = if ($horizontal) { 'horizontal' } else { 'vertical' }
         if ($steps -eq 0) { Stop-Hu 'steps 不能为 0；没有滚动。' }
         if ([Math]::Abs([long]$steps) -gt 200) { Stop-Hu 'steps 绝对值不能超过 200；拆成多次并在每次之间验证状态。' 2 }
-        if ($script:Dry) { Write-Output "dry: scrollin $($point.Note) delta=$delta x$steps"; Write-Output (Get-GatePreview $w $point); break }
+        if ($script:Dry) { Write-Output "dry: scrollin $($point.Note) axis=$axis delta=$delta x$steps"; Write-Output (Get-GatePreview $w $point); break }
         $before = New-TempPng 'scroll-before'; $after = New-TempPng 'scroll-after'
         try {
             $null = Try-VerificationShot $w $before
             $timing = Invoke-WithBorrowedFocus $w {
                 Assert-PointTargetsWindow $w $point
                 $expected = [Math]::Min([Math]::Abs([long]$steps), 1000)
-                $sent = [HuWin]::MouseWheel($point.ScreenX,$point.ScreenY,$delta,$steps)
+                $sent = [HuWin]::MouseWheel($point.ScreenX,$point.ScreenY,$delta,$steps,$horizontal)
                 if ($sent -lt $expected) { Stop-Hu "effect=unknown: 只发送了 $sent/$expected 个滚轮事件。不要自动重试。" 2 }
             }
             Start-Sleep -Milliseconds 300
             $null = Try-VerificationShot $w $after
-            Write-Output "scrolled $($point.Note) delta=$delta x$steps；$(Format-FocusSummary $timing)。"
+            Write-Output "scrolled $($point.Note) axis=$axis delta=$delta x$steps；$(Format-FocusSummary $timing)。"
             $actionEvidence = [ordered]@{
                 layer = 'L2'; kind = 'scroll'; recordedAt = [DateTimeOffset]::Now.ToString('o')
                 target = [ordered]@{ windowX = $point.X; windowY = $point.Y; normalizedX = [Math]::Round($point.X/[double]$w.W,6); normalizedY = [Math]::Round($point.Y/[double]$w.H,6) }
-                request = [ordered]@{ delta = $delta; steps = $steps }
+                request = [ordered]@{ delta = $delta; steps = $steps; axis = $axis }
                 focus = [ordered]@{ borrowed = $timing.Borrowed; seconds = [Math]::Round($timing.FocusSeconds,3); actionSeconds = [Math]::Round($timing.ActionSeconds,3); waitedForUserSeconds = [Math]::Round($timing.WaitedSeconds,3) }
             }
             Write-VerificationReport $w $before $after ($point.X/[double]$w.W) ($point.Y/[double]$w.H) -ActionEvidence $actionEvidence
@@ -1178,10 +1370,11 @@ switch ($Command.ToLowerInvariant()) {
     }
 
     'open' {
-        if (-not $CommandArgs.Count) { Stop-Hu '用法: win.ps1 open <显示名|进程名|exe路径> [--cdp 端口] [--relaunch] [--dry]' }
+        if (-not $CommandArgs.Count -or $CommandArgs[0].StartsWith('--')) { Stop-Hu '用法: win.ps1 open <显示名|进程名|exe路径> [--cdp 端口] [--relaunch] [--background] [--dry]' }
         $name = $CommandArgs[0]; $cdpIndex = [Array]::IndexOf($CommandArgs,'--cdp'); $port = $null
         if ($cdpIndex -ge 0 -and $cdpIndex + 1 -lt $CommandArgs.Count) { $port = [int]$CommandArgs[$cdpIndex+1] }
         $relaunch = $CommandArgs -contains '--relaunch'
+        $background = ($CommandArgs -contains '--background') -or ($CommandArgs -contains '--bg')
         $path = $null; $appId = $null
         if (Test-Path -LiteralPath $name) { $path = (Get-Item -LiteralPath $name).FullName }
         if (-not $path) {
@@ -1277,10 +1470,15 @@ switch ($Command.ToLowerInvariant()) {
             while (@($running | Where-Object { -not $_.HasExited }).Count -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }
             if (@($running | Where-Object { -not $_.HasExited }).Count) { Stop-Hu 'refused: app 30 秒内没有正常退出；可能有保存确认框。请用户处理，不会强杀。' 2 }
         }
-        if ($script:Dry) { Write-Output "dry: launch $(if($path){$path}else{"shell:AppsFolder\$appId"}) $(if($port){"--remote-debugging-port=$port"})"; break }
+        if ($background -and (-not $path -or [IO.Path]::GetExtension($path) -ne '.exe')) {
+            Stop-Hu 'refused: --background 需要真实 exe 路径；开始菜单/UWP/.lnk 由 shell 接管启动，无法请求“不激活”。去掉 --background，或给出 exe 路径。' 2
+        }
+        if ($script:Dry) { Write-Output "dry: launch $(if($path){$path}else{"shell:AppsFolder\$appId"}) $(if($port){"--remote-debugging-port=$port"}) background=$background"; break }
+        $previousForeground = [HuWin]::ForegroundWindow()
+        $launched = $null
         if ($port) {
             if (-not $path -or [IO.Path]::GetExtension($path) -ne '.exe') { Stop-Hu '这个开始菜单/UWP app 无法从当前解析结果携带 CDP 参数启动；请提供真实 exe 路径。' 2 }
-            $launched = Start-Process -FilePath $path -ArgumentList "--remote-debugging-port=$port" -PassThru
+            $launched = Start-HuProcess $path "--remote-debugging-port=$port" -NoActivate:$background
             $deadline = [DateTime]::UtcNow.AddSeconds(20)
             $cdpInfo = $null
             while (-not $cdpInfo -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 400; $cdpInfo = Get-CdpInfo $port }
@@ -1290,8 +1488,25 @@ switch ($Command.ToLowerInvariant()) {
                 Stop-Hu "effect=unknown: app 已启动，端口 $port 也返回 CDP，但无法证明二者属于同一实例（owner pid=$($ownership.Owners -join ',')；$($ownership.Reason)）。不会继续控制。" 2
             }
             Write-Output "CDP: 127.0.0.1:$port 已通且归属新实例（owner pid=$($ownership.Owners -join ',')）。下一步: node `"$PSScriptRoot\cdp.js`" $port list"
-        } elseif ($path) { Start-Process -FilePath $path | Out-Null; Write-Output "已启动: $path" }
+        } elseif ($path) {
+            $launched = Start-HuProcess $path '' -NoActivate:$background
+            if (-not $background) { Write-Output "已启动: $path pid=$($launched.Id)" }
+        }
         else { Start-Process explorer.exe -ArgumentList "shell:AppsFolder\$appId" | Out-Null; Write-Output "已启动开始菜单应用: $name ($appId)" }
+        if ($background -and $null -ne $launched) {
+            # The no-activate request is advisory. Read the foreground back and say
+            # exactly what happened instead of promising the user was not disturbed.
+            $report = Get-HuLaunchReport $path ([int]$launched.Id) $previousForeground
+            $windowText = if ($null -ne $report.Window) { Format-Window $report.Window } else { 'none（8 秒内未出现顶层窗口；可能是单实例转交、启动器或仍在加载）' }
+            Write-Output "已后台启动: $path pid=$($launched.Id) foreground=$($report.Foreground)"
+            Write-Output "窗口: $windowText"
+            if ($report.ForegroundStolen) {
+                $restoreText = if ($report.Restored) { "已在 $($report.RestoreAttempts) 次内把原前台还给用户" } else { '未能还原（原窗口已消失，或用户正在输入时系统拒绝了不带 Alt 解锁的 SetForegroundWindow）' }
+                Write-HuWarning "⚠️ app 忽略了不激活请求并抢了前台；$restoreText。该 app 的档案应记录“--background 不生效”；它的窗口现在可能不在前台，读操作照常用 shot/CDP。"
+            } elseif ($null -ne $report.Window) {
+                Write-Output "前台未被打扰；可直接 win.ps1 shot $(Format-Hwnd $report.Window.Hwnd) <路径> 后台取证。"
+            }
+        }
         break
     }
 

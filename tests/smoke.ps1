@@ -72,6 +72,10 @@ try {
     if ($LASTEXITCODE -ne 2 -or (($oversizeScroll -join "`n") -notmatch '不能超过 200')) {
         throw 'L2 超长滚动没有在发送前明确拒绝。'
     }
+    $horizScroll = @(& $win scrollin $hwnd 0.5 0.5 120 3 --horizontal --dry)
+    if ($LASTEXITCODE -or (($horizScroll -join "`n") -notmatch 'axis=horizontal')) {
+        throw "scrollin --horizontal --dry 没有声明横向轴：$($horizScroll -join ' ')"
+    }
     Write-Output 'bounded-focus-actions: PASS'
     $coordinateState = 'SKIP(user-active)'
     $idle = [HuWin]::UserIdleSeconds()
@@ -126,11 +130,15 @@ try {
     # probing and semantic UIA checks follow so they cannot consume the
     # foreground-activation window granted by Windows.
     $probeReport = @(& $probe 'smoke fixture')
-    if ($LASTEXITCODE -or (($probeReport -join "`n") -notmatch "(?m)^相关 PID: $($fixtureProcess.Id)$") -or
-        (($probeReport -join "`n") -notmatch 'editable=1') -or (($probeReport -join "`n") -notmatch 'actionable=1')) {
+    $probeText = $probeReport -join "`n"
+    if ($LASTEXITCODE -or ($probeText -notmatch "(?m)^相关 PID: $($fixtureProcess.Id)$") -or
+        ($probeText -notmatch 'editable=1') -or ($probeText -notmatch 'actionable=1')) {
         throw '动态 probe 没有严格限定 fixture PID，或 UIA 统计异常。'
     }
-    Write-Output 'probe: read-only PID scoping/UIA PASS'
+    if ($probeText -notmatch 'COM 自动化对象模型') {
+        throw 'probe 没有输出 COM 只读节。'
+    }
+    Write-Output 'probe: read-only PID scoping/UIA/COM PASS'
 
     $uia = @(& $win uia $hwnd)
     if ($LASTEXITCODE -or -not ($uia -match 'Edit')) { throw 'UIA 没有枚举到 fixture Edit。' }
@@ -192,10 +200,38 @@ try {
         $env:WIN_USE_MASTER_HUD_CAPTURABLE = $oldHudCapturable
     }
 
+    $screenPath = Join-Path $evidence 'screen-window.png'
+    $screenOut = @(& $win screen $screenPath --window $hwnd)
+    if ($LASTEXITCODE) { throw "screen --window exit=$LASTEXITCODE" }
+    $screenReceipt = Get-Content -LiteralPath ($screenPath + '.receipt.json') -Raw | ConvertFrom-Json
+    if (-not $screenReceipt.composition -or $screenReceipt.method -notmatch 'CopyFromScreen') {
+        throw 'screen 收据没有标记桌面合成方法。'
+    }
+    $regionPath = Join-Path $evidence 'screen-region.png'
+    $regionOut = @(& $win screen $regionPath --region 0 0 80 80)
+    if ($LASTEXITCODE -or -not (Test-Path -LiteralPath $regionPath)) { throw "screen --region 失败：$($regionOut -join ' ')" }
+    $both = @(& $hostExe -NoProfile -File $win screen (Join-Path $evidence 'screen-both.png') --window $hwnd --region 0 0 80 80 2>&1)
+    if ($LASTEXITCODE -eq 0 -or (($both -join "`n") -notmatch '只能选一个')) {
+        throw 'screen 同时给 --window 和 --region 没有拒绝。'
+    }
+    Write-Output 'screen: window/region/mutex PASS'
+
+    $notepad = Join-Path $env:SystemRoot 'System32\notepad.exe'
+    $bgDry = @(& $win open $notepad --background --dry)
+    if ($LASTEXITCODE -or (($bgDry -join ' ') -notmatch 'background=True')) {
+        throw "open --background --dry 失败：$($bgDry -join ' ')"
+    }
+    $nonExe = Join-Path $root 'SKILL.md'
+    $bgRefuse = @(& $hostExe -NoProfile -File $win open $nonExe --background --dry 2>&1)
+    if ($LASTEXITCODE -ne 2 -or (($bgRefuse -join "`n") -notmatch '--background 需要真实 exe')) {
+        throw "open --background 对非 exe 没有拒绝：$($bgRefuse -join ' ')"
+    }
+    Write-Output 'open-background: dry/exe-only PASS'
+
     if (-not (Test-Path -LiteralPath ($shot + '.receipt.json'))) { throw 'shot receipt 未生成。' }
     if (-not (Test-Path -LiteralPath ($see + '.uia.json'))) { throw 'see UIA map 未生成。' }
     $evidenceLabel = if ($KeepEvidence) { $evidence } else { 'temporary(auto-cleaned)' }
-    Write-Output "PASS: build/windows/probe/shot/see/uia/uiaread/uiaset/invoke/dry-gates/bounded-focus/hud coordinate=$coordinateState evidence=$evidenceLabel"
+    Write-Output "PASS: build/windows/probe/shot/see/screen/uia/uiaread/uiaset/invoke/dry-gates/bounded-focus/hud/open-bg coordinate=$coordinateState evidence=$evidenceLabel"
 } finally {
     if ($fixtureProcess -and -not $fixtureProcess.HasExited) {
         $fixtureProcess.CloseMainWindow() | Out-Null

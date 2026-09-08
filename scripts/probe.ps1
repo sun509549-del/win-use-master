@@ -732,6 +732,129 @@ function Get-UrlProtocols([string] $ExePath, [string] $InstallRoot, [string] $Pa
     return @($items | Sort-Object Scheme -Unique)
 }
 
+function Get-RegistryDefault($Key, [string] $SubKey) {
+    $sub = $null
+    try {
+        $sub = $Key.OpenSubKey($SubKey)
+        if (-not $sub) { return '' }
+        return [string]$sub.GetValue('', '')
+    }
+    catch { return '' }
+    finally { if ($sub) { $sub.Dispose() } }
+}
+
+# COM automation is the Windows counterpart of an AppleScript dictionary: Office,
+# WPS, Photoshop, AutoCAD, Visio and many line-of-business apps expose an object
+# model through registered LocalServer32 classes and type libraries. This only
+# reads the registry; instantiating a ProgID could launch a second instance.
+function Get-ComAutomationFacts([string] $ExePath, [string] $InstallRoot) {
+    $servers = [System.Collections.Generic.List[object]]::new()
+    $typeLibs = [System.Collections.Generic.List[object]]::new()
+    $exeName = if ($ExePath) { [IO.Path]::GetFileName($ExePath) } else { $null }
+    $budget = [Diagnostics.Stopwatch]::StartNew()
+    $visited = 0
+    $truncated = $false
+    if (-not $ExePath -and -not (Test-SpecificInstallRoot $InstallRoot)) {
+        return [pscustomobject]@{ Servers = @(); TypeLibs = @(); Truncated = $false; Visited = 0 }
+    }
+
+    foreach ($view in @('CLSID', 'WOW6432Node\CLSID')) {
+        $root = $null
+        try { $root = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey($view) } catch { $root = $null }
+        if (-not $root) { continue }
+        try {
+            foreach ($clsid in $root.GetSubKeyNames()) {
+                $visited++
+                if ($budget.Elapsed.TotalSeconds -gt 8 -or $visited -gt 60000) { $truncated = $true; break }
+                $key = $null
+                try {
+                    $key = $root.OpenSubKey($clsid)
+                    if (-not $key) { continue }
+                    $server = ''
+                    $kind = $null
+                    foreach ($serverKey in @('LocalServer32', 'LocalServer')) {
+                        $sub = $key.OpenSubKey($serverKey)
+                        if (-not $sub) { continue }
+                        try { $server = [string]$sub.GetValue('', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } finally { $sub.Dispose() }
+                        if ($server) { $kind = $serverKey; break }
+                    }
+                    if (-not $server) { continue }
+                    $expanded = [Environment]::ExpandEnvironmentVariables($server)
+                    if (-not (Test-TargetReference $expanded $ExePath $InstallRoot $exeName)) { continue }
+                    $servers.Add([pscustomobject]@{
+                        Clsid = $clsid; Name = [string]$key.GetValue('', '')
+                        ProgId = Get-RegistryDefault $key 'ProgID'
+                        VersionIndependentProgId = Get-RegistryDefault $key 'VersionIndependentProgID'
+                        TypeLib = Get-RegistryDefault $key 'TypeLib'
+                        Server = $expanded; Kind = $kind; View = $view
+                    })
+                }
+                catch { }
+                finally { if ($key) { $key.Dispose() } }
+            }
+        }
+        finally { $root.Dispose() }
+        if ($truncated) { break }
+    }
+
+    $tlRoot = $null
+    try { $tlRoot = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey('TypeLib') } catch { $tlRoot = $null }
+    if ($tlRoot -and -not $truncated) {
+        try {
+            foreach ($guid in $tlRoot.GetSubKeyNames()) {
+                $visited++
+                if ($budget.Elapsed.TotalSeconds -gt 10) { $truncated = $true; break }
+                $guidKey = $null
+                try {
+                    $guidKey = $tlRoot.OpenSubKey($guid)
+                    if (-not $guidKey) { continue }
+                    foreach ($version in $guidKey.GetSubKeyNames()) {
+                        $versionKey = $null
+                        try {
+                            $versionKey = $guidKey.OpenSubKey($version)
+                            if (-not $versionKey) { continue }
+                            $description = [string]$versionKey.GetValue('', '')
+                            foreach ($lcid in $versionKey.GetSubKeyNames()) {
+                                if ($lcid -notmatch '^\d+$') { continue }
+                                $lcidKey = $null
+                                try {
+                                    $lcidKey = $versionKey.OpenSubKey($lcid)
+                                    if (-not $lcidKey) { continue }
+                                    foreach ($platform in @('win32', 'win64')) {
+                                        $platformKey = $lcidKey.OpenSubKey($platform)
+                                        if (-not $platformKey) { continue }
+                                        try {
+                                            $file = [Environment]::ExpandEnvironmentVariables([string]$platformKey.GetValue('', ''))
+                                            # A trailing "\N" selects a resource id inside the file.
+                                            $filePath = $file -replace '\\\d+$', ''
+                                            if ($filePath -and (Test-TargetReference $filePath $ExePath $InstallRoot $exeName)) {
+                                                $typeLibs.Add([pscustomobject]@{ Guid = $guid; Version = $version; Description = $description; Platform = $platform; File = $filePath })
+                                            }
+                                        }
+                                        finally { $platformKey.Dispose() }
+                                    }
+                                }
+                                catch { }
+                                finally { if ($lcidKey) { $lcidKey.Dispose() } }
+                            }
+                        }
+                        catch { }
+                        finally { if ($versionKey) { $versionKey.Dispose() } }
+                    }
+                }
+                catch { }
+                finally { if ($guidKey) { $guidKey.Dispose() } }
+            }
+        }
+        finally { $tlRoot.Dispose() }
+    }
+    elseif ($tlRoot) { $tlRoot.Dispose() }
+
+    $uniqueServers = @($servers | Sort-Object @{ Expression = { [string]::IsNullOrEmpty($_.ProgId) } }, ProgId, Clsid -Unique)
+    $uniqueTypeLibs = @($typeLibs | Sort-Object Guid, Version, Platform -Unique)
+    return [pscustomobject]@{ Servers = $uniqueServers; TypeLibs = $uniqueTypeLibs; Truncated = $truncated; Visited = $visited }
+}
+
 function Get-IntegrityLabel([uint32] $Rid) {
     if ($Rid -eq 0) { return '未知/不可读' }
     if ($Rid -lt 0x1000) { return ("Untrusted (0x{0:X})" -f $Rid) }
@@ -1205,6 +1328,34 @@ else {
     foreach ($u in $protocols) { Write-Output ("  {0}://  [{1}] {2}" -f $u.Scheme, $u.Source, $u.Detail) }
 }
 
+$com = Get-ComAutomationFacts $exePath $installRoot
+Write-Section 'L0：COM 自动化对象模型（只读注册表，未实例化）'
+if ($com.Servers.Count -eq 0 -and $com.TypeLibs.Count -eq 0) {
+    Write-Output '未发现指向该 exe/安装目录的 COM LocalServer32 或 TypeLib 注册项。'
+}
+else {
+    if ($com.Servers.Count) {
+        Write-Output ("COM 服务器 {0} 个（app 以 COM 对象模型对外暴露，等价于 Mac 的 AppleScript 字典）:" -f $com.Servers.Count)
+        foreach ($s in @($com.Servers | Select-Object -First 12)) {
+            $progText = if ($s.ProgId) { $s.ProgId } elseif ($s.VersionIndependentProgId) { $s.VersionIndependentProgId } else { '<无 ProgID>' }
+            $vipText = if ($s.VersionIndependentProgId -and $s.VersionIndependentProgId -ne $s.ProgId) { " ({0})" -f $s.VersionIndependentProgId } else { '' }
+            $tlText = if ($s.TypeLib) { ' typelib=yes' } else { '' }
+            Write-Output ("  {0}{1}  clsid={2}  {3}{4}" -f $progText, $vipText, $s.Clsid, $s.Kind, $tlText)
+            Write-Output ("      server={0}" -f $s.Server)
+        }
+        if ($com.Servers.Count -gt 12) { Write-Output ("  ... 另有 {0} 个 COM 类未展开" -f ($com.Servers.Count - 12)) }
+    }
+    if ($com.TypeLibs.Count) {
+        Write-Output ("类型库 {0} 个:" -f $com.TypeLibs.Count)
+        foreach ($t in @($com.TypeLibs | Select-Object -First 8)) {
+            Write-Output ("  {0} v{1} [{2}] {3}" -f $(if ($t.Description) { $t.Description } else { $t.Guid }), $t.Version, $t.Platform, $t.File)
+        }
+        if ($com.TypeLibs.Count -gt 8) { Write-Output ("  ... 另有 {0} 个类型库未展开" -f ($com.TypeLibs.Count - 8)) }
+    }
+    Write-Output '判据提示: 注册了 ProgID 只说明对象模型存在。New-Object -ComObject 可能新起隐藏实例而非连接用户已开的窗口；先只读属性验证，写操作与保存/发送同样受停手线约束。'
+}
+if ($com.Truncated) { Add-Warning ("COM 注册表枚举在 {0} 项/时限内截断，结果可能不完整。" -f $com.Visited) }
+
 Write-Section '窗口'
 if ($targetWindows.Count -eq 0) { Write-Output '无目标顶层窗口（未运行、无窗口、路径关联失败或访问受限）。' }
 else {
@@ -1254,9 +1405,18 @@ if ($huWinLoaded -and $relatedPids.Count) {
 }
 
 Write-Section 'L0 / L1 / L2 / L3 路径建议'
+$hasCom = [bool]($com.Servers | Where-Object { $_.ProgId -or $_.VersionIndependentProgId } | Select-Object -First 1)
+if ($hasCom) {
+    $bestCom = $com.Servers | Where-Object { $_.ProgId -or $_.VersionIndependentProgId } | Select-Object -First 1
+    $bestProg = if ($bestCom.VersionIndependentProgId) { $bestCom.VersionIndependentProgId } else { $bestCom.ProgId }
+    Write-Output ('L0 ✅ 有 COM 对象模型：先查官方对象模型文档，只读试探 New-Object -ComObject {0}；它可能启动新实例，不要用它去改用户已打开的文档，除非用户同意。' -f $bestProg)
+}
 if ($hasCdp) {
     $bestCdp = $cdpResults | Where-Object { $_.Probe.IsCdp } | Select-Object -First 1
     Write-Output ('L0 ✅ 首选现有 CDP：node "{0}" {1} list' -f (Join-Path $ToolRoot 'cdp.js'), $bestCdp.PortInfo.Port)
+}
+elseif ($hasCom) {
+    Write-Output 'L0 其它：无 CDP；COM 之外仍应核对 app 官方 CLI/SDK/文件接口。'
 }
 elseif ($protocols.Count -gt 0 -or $ports.Count -gt 0) {
     Write-Output 'L0 ⚠️ 有 URL scheme 或本地服务线索，但尚未证明具体路由/API；先做只读协议验证。'

@@ -22,13 +22,20 @@ $button.AccessibleName = 'Apply fixture value'
 $button.Text = 'Apply'
 $button.SetBounds(28, 125, 120, 38)
 
+$dangerButton = [Windows.Forms.Button]::new()
+$dangerButton.Name = 'sendButton'
+$dangerButton.AccessibleName = 'Continue'
+$dangerButton.Text = 'Continue'
+$dangerButton.SetBounds(160, 125, 90, 38)
+
 $status = [Windows.Forms.Label]::new()
 $status.Name = 'fixtureStatus'
 $status.Text = 'status: idle'
-$status.SetBounds(175, 132, 300, 30)
+$status.SetBounds(270, 132, 220, 30)
 $button.Add_Click({ $status.Text = 'status: ' + $edit.Text })
+$dangerButton.Add_Click({ $status.Text = 'status: DANGER-RAN' })
 
-$form.Controls.AddRange(@($label, $edit, $button, $status))
+$form.Controls.AddRange(@($label, $edit, $button, $dangerButton, $status))
 $timer = [Windows.Forms.Timer]::new()
 $timer.Interval = 120000
 $timer.Add_Tick({ $form.Close() })

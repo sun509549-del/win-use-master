@@ -20,11 +20,16 @@ $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("win-use-master-workbuddy-$([G
 [IO.Directory]::CreateDirectory($tempRoot) | Out-Null
 $probeText = 'win-use-master cdp probe'
 $composer = '[data-slate-editor="true"]'
+$script:TargetId = $null
 
-function Invoke-Eval([string] $Js) {
-    $out = @(& $node $cdp $Port eval auto $Js 2>&1)
-    if ($LASTEXITCODE -ne 0) { throw "cdp eval 失败：$($out -join ' ')" }
-    return (($out | ForEach-Object { [string]$_ }) -join "`n")
+function Get-Inspect([string] $Selector, [string] $Target = '') {
+    $resolvedTarget = if ($Target) { $Target } else { $script:TargetId }
+    if (-not $resolvedTarget) { throw 'inspect 需要先确定 target id。' }
+    $out = @(& $node $cdp $Port inspect $resolvedTarget $Selector 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "cdp inspect 失败：$($out -join ' ')" }
+    $json = [string]($out | Where-Object { [string]$_ -match '^\{' } | Select-Object -Last 1)
+    if (-not $json) { throw "cdp inspect 没有返回 JSON：$($out -join ' ')" }
+    return ($json | ConvertFrom-Json)
 }
 
 try {
@@ -44,18 +49,30 @@ try {
     }
 
     $targets = @(& $node $cdp $Port list 2>&1)
-    if ($LASTEXITCODE -ne 0 -or -not @($targets | Where-Object { $_ -match '^page\t' }).Count) { throw "cdp list 没有 page target：$($targets -join ' ')" }
+    $pageIds = @($targets | Where-Object { $_ -match '^page\t' } | ForEach-Object { ([string]$_ -split "`t")[1] })
+    if ($LASTEXITCODE -ne 0 -or -not $pageIds.Count) { throw "cdp list 没有 page target：$($targets -join ' ')" }
 
-    $state = Invoke-Eval "(() => { const e = document.querySelector('$composer'); if (!e) return 'NO_COMPOSER'; return JSON.stringify({ placeholder: !!e.querySelector('[data-slate-placeholder]'), role: e.getAttribute('role') }); })()"
-    if ($state -match 'NO_COMPOSER') { throw '没有找到 Slate 输入区 [data-slate-editor="true"]；版本可能漂移，先重新 snapshot。' }
-    $stateObj = $state | ConvertFrom-Json
-    if (-not $stateObj.placeholder) {
+    $composerTargets = @()
+    foreach ($candidateId in $pageIds) {
+        try {
+            $candidateState = Get-Inspect $composer $candidateId
+            if ($candidateState.found) { $composerTargets += [pscustomobject]@{ Id = $candidateId; State = $candidateState } }
+        } catch { }
+    }
+    if (-not $composerTargets.Count) { throw '没有任何已授权 page target 包含 Slate 输入区；版本可能漂移，先重新 snapshot。' }
+    if ($composerTargets.Count -gt 1) {
+        Write-Output "refused: 有 $($composerTargets.Count) 个 page target 包含输入区，无法唯一确定目标；不会写入。"
+        exit 2
+    }
+    $script:TargetId = $composerTargets[0].Id
+    $stateObj = $composerTargets[0].State
+    if (-not $stateObj.placeholderVisible) {
         Write-Output 'refused: 输入区已有用户草稿（占位符未显示）；不会覆盖或追加。'
         exit 2
     }
     if ($stateObj.role -ne 'textbox') { Write-Warning "输入区 role=$($stateObj.role)，与档案记录的 textbox 不同；请核对版本漂移。" }
 
-    $sendBefore = @(& $node $cdp $Port find auto '发送' --role button 2>&1)
+    $sendBefore = @(& $node $cdp $Port find $script:TargetId '发送' --role button 2>&1)
     if ($LASTEXITCODE -ne 0 -or (($sendBefore -join "`n") -notmatch '^ref=e\d+ button "发送" .*\[disabled\]')) {
         throw "空输入区时发送键不是 disabled，状态指示器不可用：$($sendBefore -join ' ')"
     }
@@ -72,7 +89,7 @@ try {
     $recipePath = Join-Path $tempRoot 'recipe.act.txt'
     Set-Content -LiteralPath $recipePath -Value $recipe -Encoding utf8
     $receiptPath = Join-Path $tempRoot 'act.json'
-    $actOut = @(& $node $cdp $Port act auto $recipePath --receipt $receiptPath 2>&1)
+    $actOut = @(& $node $cdp $Port act $script:TargetId $recipePath --receipt $receiptPath 2>&1)
     $actText = ($actOut | ForEach-Object { [string]$_ }) -join "`n"
     if ($LASTEXITCODE -ne 0) { throw "act 失败：$actText" }
     if ($actText -notmatch 'done: 6 步全部完成') { throw "act 没有完成 6 步：$actText" }
@@ -89,9 +106,9 @@ try {
         throw "act 收据不符合约定：steps=$($receipt.action.stepsCompleted) events=$($receipt.events.Count) url=$($receipt.target.url)"
     }
 
-    $after = Invoke-Eval "(() => { const e = document.querySelector('$composer'); return JSON.stringify({ placeholder: !!e.querySelector('[data-slate-placeholder]') }); })()" | ConvertFrom-Json
-    $sendAfter = @(& $node $cdp $Port find auto '发送' --role button 2>&1)
-    if (-not $after.placeholder -or (($sendAfter -join "`n") -notmatch '\[disabled\]')) {
+    $after = Get-Inspect $composer
+    $sendAfter = @(& $node $cdp $Port find $script:TargetId '发送' --role button 2>&1)
+    if (-not $after.placeholderVisible -or $after.textLength -ne 0 -or (($sendAfter -join "`n") -notmatch '\[disabled\]')) {
         throw '撤回后输入区没有回到占位符状态或发送键未回到 disabled；请人工检查输入区。'
     }
     Write-Output "PASS: WorkBuddy AI CDP profile insert($($probeText.Length))→send enabled→SelectAll+Backspace→send disabled, focus=0s, port=$Port"

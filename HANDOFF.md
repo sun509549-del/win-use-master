@@ -1,6 +1,6 @@
 # win-use-master 维护交接
 
-更新日期：2026-09-08  
+更新日期：2026-09-09
 公开仓库：<https://github.com/sun509549-del/win-use-master>  
 上游设计：[alchaincyf/huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use)
 
@@ -22,6 +22,10 @@
 - PowerShell 7 + Node.js 24 是当前开发/CI 基线；Node.js 22+ 属支持范围。
 - `scripts/HuWin.dll` 是生成物，不提交；`win.ps1` 会在缺失或源码更新时重编译。
 - 收据 schema 已统一为 `win-use-master/receipt-v1`、`win-use-master/uia-map-v1`、`win-use-master/action-receipt-v1`。
+- 模糊窗口/PID 或 CDP target 命中多个候选时退出 2，不再按面积或列表顺序自动选第一个；写操作应优先使用明确 HWND/target id。
+- CDP `eval`/`eval-read` 已改为浏览器副作用检查；受控状态读取优先用脱敏 `inspect`。任意脚本写入只能显式使用 `eval-unsafe --allow-side-effects`，并生成不含原始表达式、`effect` 始终为 `unknown` 的动作回执。
+- `open --cdp` 校验通过后签发 30 分钟 `cdp-session-v1`，绑定端口、owner PID/路径/启动时间和 page target id；底层 `cdp.js` 的每个写命令独立复核，`--dry` 不签发。
+- `config/risk-actions.json` 是 UIA/CDP/L2 共用的 `risk-actions-v1`：UIA invoke 与 UIA-map 坐标点击检查控件语义，CDP click/mouse 检查文本/ARIA/id/name/表单提交，Enter/保存/关闭快捷键 fail-closed。规则命中在输入前退出 2，`--force` 不绕过。
 - 完整可重放档案有五个：计算器 11.x（UWP 宿主 + InvokePattern）、记事本 11.x（Document ValuePattern 可逆写）、WorkBuddy AI 5.4.2（CDP 零焦点 insert/撤回；需用户先以 `--cdp` 启动授权实例）、Excel 16.x（L0 COM 私有实例写表→另存→不经 Excel 验证）、WPS 表格 12.x（KET.Application 私有实例，同任务 + 第二实例重开读回）。只读档案：QQ 9.9（Electron，UIA 树可读、PrintWindow 完整、无 CDP）、微信 4.1（Qt5，UIA 空树、PrintWindow 完整、无 CDP）、剪映 10.4（可见态 PrintWindow 完整、UIA provider 挂死被 worker 终止）。`app档案.md` 有跨 app 共性结论一节（8 个 app），`references/踩坑实录.md` 记录了工具为何如此。Blender 未安装。证据图、快照原文不入库。
 
 ## 3. 代码地图
@@ -34,6 +38,7 @@
 | `scripts/uia-worker.ps1` | 隔离的 UIA list/read/resolve/set/invoke worker，正文经 stdin 传递 |
 | `scripts/probe.ps1` | 只读应用发现：Win32/AppX、版本、架构、runtime、端口、协议、COM、窗口、UIA、完整性 |
 | `scripts/cdp.js` | CDP target、DOM ref、动作、截图、差分、脱敏收据和截止时间 |
+| `config/risk-actions.json` | 跨 UIA/CDP/L2 的版本化最终动作文本、按键与 DOM 语义拒绝规则 |
 | `references/控制面详解.md` | 四层原理和选择依据 |
 | `references/权限与故障.md` | UIPI、锁屏、虚拟桌面、截图/UIA/CDP/HUD 故障处理 |
 | `references/取证规范.md` | before/action/after、哈希、隐私、归档和跑批 |
@@ -60,14 +65,19 @@
 - worker 硬截止时间 6 秒。读超时表示 L1 本轮不可用；写超时表示动作可能已发生，写 `unknown` 收据、退出 2、禁止自动重试。
 - 密码/凭据字段必须拒绝；输入正文只能走 stdin，不能进入 worker 命令行或收据。
 - `eN` 是短期引用；长期档案保存 AutomationId/Name/ControlType/父子关系，不保存本轮 ref。
+- `invoke` 必须先在只读 worker 中解析当前元素并应用共享风险规则，再由 action worker 重定位与复核；无标签 Button/Hyperlink/MenuItem fail-closed。
 
 ### CDP
 
 - 必须验证监听端口 owner PID 属于目标 exe 或进程树；端口能返回 JSON 不代表属于目标。
+- 修改型 CDP 命令没有有效 `cdp-session-v1` 时必须退出 2；会话过期、owner 身份变化或 target 不在授权集合时都不能连接执行。
+- target id 精确匹配优先；显式 title/URL 子串多命中或 `auto` 最高分并列时退出 2；授权集合含多个 page target 时写操作禁止 `auto`。
 - HTTP/连接限 5 秒，单次协议请求限 6 秒；`auto` 只评分前 12 个候选且每个 1.5 秒；`act` 最多 200 步/120 秒。
-- 修改命令必须写 `action-receipt-v1`。输入仅记录长度；CSS 仅记录长度与 SHA-256；query/hash 不进入 target URL。
+- 修改命令必须写 `action-receipt-v1`。输入仅记录长度；CSS 和 `eval-unsafe` 表达式仅记录长度与 SHA-256；query/hash 不进入 target URL。
 - 终端差分对所有承载用户文本的元素只显示字符数：采集时按 `isContentEditable`/input/textarea/`role=textbox|searchbox` 打 `editable` 标记，不能只靠 `kind` 后缀判断（Slate 的 `div/textbox` 曾因此漏脱敏）。
 - `press SelectAll`（Ctrl+A）只用于撤回刚写进编辑器的内容；配 `Backspace` 走真实键事件，不用 `text` 清空 contenteditable。
+- `click`/`mouse` 必须在 `withDiff` 之前做语义预检；form-submit、无标签动作目标和风险词命中都退出 2。`press Enter` 在元素聚焦前拒绝。拒绝收据写 `result.status=refused` 与 `riskGuard`。
+- `eval-unsafe` 可运行任意 JavaScript，不在结构化风险检查保护面内；只能当开发/诊断逃生口，不能作为停手线绕行路径。
 - 修改请求超时退出 2、`effect=unknown`。关闭 WebSocket 后让 Node 自然排空，不能恢复成强制 `process.exit(1)`，否则 Windows/libuv 可能断言崩溃。
 
 ### 截图与证据
@@ -172,4 +182,3 @@ pwsh -NoProfile -File tests/wps-et-com-profile.ps1
 - “Microsoft Excel”/`XLMAIN`/`Excel.Application.12` 在装了 WPS 的机器上可能都是 WPS；只有 exe 路径可信。
 - UIA 可用性不能按框架猜：Electron 的 QQ 可读、WorkBuddy 空树；Qt 的剪映会挂死 provider（隔离 worker 6 秒终止是唯一保护）。
 - HWND、端口、UIA/CDP ref、坐标和界面文案都是易腐信息，不得写成通用常量。
-

@@ -22,6 +22,7 @@ $script:UiaTimeoutMilliseconds = 6000
 $script:Force = $CommandArgs -contains '--force'
 $script:Dry = $CommandArgs -contains '--dry'
 $script:ProcessParentCache = @{}
+$script:RiskPolicy = $null
 $CommandArgs = @($CommandArgs | Where-Object { $_ -notin @('--force', '--dry') })
 
 function Stop-Hu {
@@ -32,6 +33,65 @@ function Stop-Hu {
 
 function Write-HuWarning([string] $Message) {
     [Console]::Error.WriteLine($Message)
+}
+
+function Get-RiskPolicy {
+    if ($script:RiskPolicy) { return $script:RiskPolicy }
+    $path = Join-Path (Split-Path -Parent $PSScriptRoot) 'config\risk-actions.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Stop-Hu "refused: 高风险动作规则不可用: $path" 2 }
+    try { $policy = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json }
+    catch { Stop-Hu "refused: 高风险动作规则无法解析: $($_.Exception.Message)" 2 }
+    if ([string]$policy.schema -ne 'win-use-master/risk-actions-v1' -or
+        -not @($policy.blockedTextPatterns).Count -or
+        @($policy.blockedKeyChords) -notcontains 'Enter' -or
+        @($policy.blockedDomSemantics) -notcontains 'form-submit') {
+        Stop-Hu 'refused: 高风险动作规则 schema 不匹配。' 2
+    }
+    $script:RiskPolicy = $policy
+    return $script:RiskPolicy
+}
+
+function Find-BlockedActionRule([string] $Text) {
+    $policy = Get-RiskPolicy
+    $normalized = if ($null -eq $Text) { '' } else { $Text.Normalize([Text.NormalizationForm]::FormKC) }
+    $normalized = [regex]::Replace($normalized, '([a-z0-9])([A-Z])', '$1 $2') -replace '[_-]+', ' '
+    foreach ($rule in @($policy.blockedTextPatterns)) {
+        try {
+            if ([regex]::IsMatch($normalized, [string]$rule.pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+                return [string]$rule.id
+            }
+        } catch { Stop-Hu 'refused: 高风险动作规则包含无效表达式。' 2 }
+    }
+    return $null
+}
+
+function Assert-SafeSemanticAction($Element, [string] $Layer, [switch] $ActionControlsOnly) {
+    if ($null -eq $Element) { return }
+    if ($ActionControlsOnly -and [string]$Element.controlType -notin @('Button','Hyperlink','MenuItem','CheckBox','RadioButton')) { return }
+    $identity = @([string]$Element.name, [string]$Element.automationId, [string]$Element.className) -join ' '
+    $rule = Find-BlockedActionRule $identity
+    if ($rule) { Stop-Hu "refused: $Layer 命中高风险最终动作规则 $rule；没有执行。--force 不绕过。" 2 }
+    if ([string]::IsNullOrWhiteSpace([string]$Element.name) -and
+        [string]$Element.controlType -in @('Button','Hyperlink','MenuItem')) {
+        Stop-Hu "refused: $Layer 的动作控件没有可核对标签；没有执行。--force 不绕过。" 2
+    }
+}
+
+function Get-CanonicalKeyChord($Key) {
+    $parts = [Collections.Generic.List[string]]::new()
+    if ($Key.Ctrl) { $parts.Add('Ctrl') }
+    if ($Key.Alt) { $parts.Add('Alt') }
+    if ($Key.Shift) { $parts.Add('Shift') }
+    if ($Key.Win) { $parts.Add('Win') }
+    $parts.Add([string]$Key.Name)
+    return $parts -join '+'
+}
+
+function Assert-SafeKeyChord($Key, [string] $Layer) {
+    $canonical = Get-CanonicalKeyChord $Key
+    if (@((Get-RiskPolicy).blockedKeyChords) -contains $canonical) {
+        Stop-Hu "refused: $Layer 按键 $canonical 可能直接提交、保存或关闭；最终动作留给用户。--force 不绕过。" 2
+    }
 }
 
 function Show-HuHud([int] $Milliseconds, [string] $Text, [string] $Style = '') {
@@ -202,6 +262,14 @@ function Format-Window($Window) {
         $Window.L, $Window.T, $Window.W, $Window.H, $Window.Cls, $title)
 }
 
+function Stop-AmbiguousHuWindow([string] $Selector, [object[]] $Matches) {
+    $shown = @($Matches | Select-Object -First 8 | ForEach-Object { '  ' + (Format-Window $_) })
+    $more = if ($Matches.Count -gt $shown.Count) { "`n  ... 另有 $($Matches.Count - $shown.Count) 个候选" } else { '' }
+    Stop-Hu ("refused: 窗口选择器「$Selector」匹配 $($Matches.Count) 个窗口，不会自动猜测目标。" +
+        "`n候选：`n" + ($shown -join "`n") + $more +
+        "`n请从 windows 输出中复制明确的 HWND（0x...）后重试。") 2
+}
+
 function Resolve-HuWindow([string] $Selector) {
     $wins = Get-HuWindows
     $numeric = ConvertTo-Hwnd $Selector
@@ -210,7 +278,8 @@ function Resolve-HuWindow([string] $Selector) {
         if ($byHwnd.Count) { return $byHwnd[0] }
         $byPid = @($wins | Where-Object { $_.Pid -eq $numeric -and -not (Test-JunkWindow $_) } |
             Sort-Object @{ Expression = { $_.W * $_.H }; Descending = $true })
-        if ($byPid.Count) { return $byPid[0] }
+        if ($byPid.Count -gt 1) { Stop-AmbiguousHuWindow $Selector $byPid }
+        if ($byPid.Count -eq 1) { return $byPid[0] }
         Stop-Hu "找不到窗口/进程 $Selector。先运行 win.ps1 windows。"
     }
 
@@ -220,6 +289,7 @@ function Resolve-HuWindow([string] $Selector) {
          $_.Title.IndexOf($Selector, [StringComparison]::OrdinalIgnoreCase) -ge 0)
     } | Sort-Object @{ Expression = { $_.W * $_.H }; Descending = $true })
     if (-not $matches.Count) { Stop-Hu "没有 owner/title 含「$Selector」的窗口。先运行 win.ps1 windows。" }
+    if ($matches.Count -gt 1) { Stop-AmbiguousHuWindow $Selector $matches }
     return $matches[0]
 }
 
@@ -714,7 +784,7 @@ function Resolve-Point($Window, [string] $XText, [string] $YText, [string] $Refe
     if ($XText -match '^(e\d+)@(.+)$') {
         $el = Resolve-UiaReference $Window $Matches[1] $Matches[2]
         $inkX = $el.Cx - $el.Width / 2 + [Math]::Min(40, $el.Width / 4)
-        return [pscustomobject]@{ X = [int]$el.Cx; Y = [int]$el.Cy; VerifyX = [int]$inkX; VerifyY = [int]$el.Cy; ScreenX = [int]($Window.L + $el.Cx); ScreenY = [int]($Window.T + $el.Cy); Note = "$($Matches[1]) from UIA map" }
+        return [pscustomobject]@{ X = [int]$el.Cx; Y = [int]$el.Cy; VerifyX = [int]$inkX; VerifyY = [int]$el.Cy; ScreenX = [int]($Window.L + $el.Cx); ScreenY = [int]($Window.T + $el.Cy); Note = "$($Matches[1]) from UIA map"; SemanticElement = $el }
     }
     $x = 0.0; $y = 0.0
     if (-not [double]::TryParse($XText, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$x) -or
@@ -735,7 +805,7 @@ function Resolve-Point($Window, [string] $XText, [string] $YText, [string] $Refe
     if ($rx -lt 0 -or $ry -lt 0 -or $rx -gt $Window.W -or $ry -gt $Window.H) {
         Stop-Hu "refused: 坐标换算后 ($([int]$rx),$([int]$ry)) 超出窗口 $($Window.W)x$($Window.H)。" 2
     }
-    return [pscustomobject]@{ X = [int][Math]::Round($rx); Y = [int][Math]::Round($ry); VerifyX = [int][Math]::Round($rx); VerifyY = [int][Math]::Round($ry); ScreenX = [int][Math]::Round($Window.L + $rx); ScreenY = [int][Math]::Round($Window.T + $ry); Note = $note }
+    return [pscustomobject]@{ X = [int][Math]::Round($rx); Y = [int][Math]::Round($ry); VerifyX = [int][Math]::Round($rx); VerifyY = [int][Math]::Round($ry); ScreenX = [int][Math]::Round($Window.L + $rx); ScreenY = [int][Math]::Round($Window.T + $ry); Note = $note; SemanticElement = $null }
 }
 
 function Get-ReferenceToken([string[]] $Items) {
@@ -909,7 +979,7 @@ win-use-master — Windows 原生 app 的分层操控与可复现取证
   win.ps1 hoverin <target> <x> <y> [@shot.png] [holdms] [shot out.png]
   win.ps1 scrollin <target> <x> <y> <delta> [steps] [--horizontal]
   win.ps1 type <target> <text> [--replace]
-  win.ps1 key <target> <Enter|Ctrl+A|Ctrl+Shift+S> [--force]
+  win.ps1 key <target> <Ctrl+A|Escape|Tab|...> [--dry]  # Enter/保存/关闭类最终动作拒绝
   win.ps1 op <target> <x> <y> <text> [@shot.png] [--replace] [shot out.png]
 
 应用与状态:
@@ -917,7 +987,7 @@ win-use-master — Windows 原生 app 的分层操控与可复现取证
   win.ps1 com <ProgID> [--dry]                 # COM 身份核对：--dry 只读 64/32 位注册；否则新起私有实例核对 exe 后 Quit
   win.ps1 hud [毫秒] [文案] [corner|glow|plain]
   probe.ps1 <显示名|进程名|exe路径>
-  node cdp.js <port> list|snapshot|find|wait|mouse|insert|press|shot|eval|act
+  node cdp.js <port> list|snapshot|find|wait|inspect|mouse|insert|press|shot|eval-read|eval-unsafe|act
 
 坐标：≤1 是归一化；>1 是窗口内物理像素；追加 @截图 使用图上像素；也可 eN@uia.json。
 screen 是桌面合成截图（含遮挡物/通知），只用于交叉验证与全屏取证；--region 用虚拟屏幕物理像素。
@@ -1124,7 +1194,11 @@ switch ($Command.ToLowerInvariant()) {
         if ($CommandArgs.Count -lt 2) { Stop-Hu '用法: win.ps1 invoke <target> <eN> [@uia.json]' }
         $w = Resolve-HuWindow $CommandArgs[0]
         $map = Get-ReferenceToken ($CommandArgs | Select-Object -Skip 2)
-        $spec = Get-UiaReferenceSpec $CommandArgs[1] $map
+        # Resolve and risk-check in a read-only worker before creating any
+        # before-action evidence. The action worker resolves the same semantic
+        # identity again immediately before invoking it.
+        $spec = Resolve-UiaReference $w $CommandArgs[1] $map
+        Assert-SafeSemanticAction $spec 'L1 UIA invoke'
         $beforeShot = New-TempPng 'invoke-before'; $afterShot = New-TempPng 'invoke-after'
         try {
             $null = Try-VerificationShot $w $beforeShot
@@ -1217,6 +1291,7 @@ switch ($Command.ToLowerInvariant()) {
         $w = Resolve-HuWindow $CommandArgs[0]
         $ref = Get-ReferenceToken ($CommandArgs | Select-Object -Skip 3)
         $point = Resolve-Point $w $CommandArgs[1] $CommandArgs[2] $ref
+        Assert-SafeSemanticAction $point.SemanticElement 'L2 UIA-map click' -ActionControlsOnly
         if ($script:Dry) { Write-Output "dry: clickin $(Format-Hwnd $w.Hwnd) $($point.Note) -> $($point.ScreenX),$($point.ScreenY)"; Write-Output (Get-GatePreview $w $point); break }
         $shotIndex = [Array]::IndexOf($CommandArgs, 'shot')
         $out = if ($shotIndex -ge 0 -and $shotIndex + 1 -lt $CommandArgs.Count) { $CommandArgs[$shotIndex + 1] } else { New-TempPng 'click-after' }
@@ -1338,9 +1413,9 @@ switch ($Command.ToLowerInvariant()) {
     }
 
     'key' {
-        if ($CommandArgs.Count -lt 2) { Stop-Hu '用法: win.ps1 key <target> <Enter|Ctrl+A|Ctrl+Shift+S> [--dry]' }
+        if ($CommandArgs.Count -lt 2) { Stop-Hu '用法: win.ps1 key <target> <Ctrl+A|Escape|Tab|...> [--dry]；Enter/保存/关闭类最终动作拒绝' }
         $w = Resolve-HuWindow $CommandArgs[0]; $key = Parse-KeyChord $CommandArgs[1]
-        if ((Test-ShellWindow $w) -and $key.Name -eq 'Enter' -and -not $script:Force) { Stop-Hu "refused: $($w.Owner) 是终端/IDE，Enter 等于执行命令。需用户明确授权后加 --force。" 2 }
+        Assert-SafeKeyChord $key 'L2 SendInput'
         if ($script:Dry) { Write-Output "dry: key $($CommandArgs[1]) -> $(Format-Hwnd $w.Hwnd)"; Write-Output (Get-GatePreview $w $null); break }
         $before = New-TempPng 'key-before'; $after = New-TempPng 'key-after'
         try {
@@ -1353,7 +1428,7 @@ switch ($Command.ToLowerInvariant()) {
             Write-Output "key $($CommandArgs[1])；$(Format-FocusSummary $timing)。"
             $actionEvidence = [ordered]@{
                 layer = 'L2'; kind = 'key'; recordedAt = [DateTimeOffset]::Now.ToString('o')
-                request = [ordered]@{ chord = $CommandArgs[1]; forceApproved = $script:Force }
+                request = [ordered]@{ chord = $CommandArgs[1]; forceRequested = $script:Force; riskPolicy = 'win-use-master/risk-actions-v1' }
                 focus = [ordered]@{ borrowed = $timing.Borrowed; seconds = [Math]::Round($timing.FocusSeconds,3); actionSeconds = [Math]::Round($timing.ActionSeconds,3); waitedForUserSeconds = [Math]::Round($timing.WaitedSeconds,3) }
             }
             Write-VerificationReport $w $before $after 0.5 0.5 -ActionEvidence $actionEvidence
@@ -1368,6 +1443,7 @@ switch ($Command.ToLowerInvariant()) {
         $w = Resolve-HuWindow $CommandArgs[0]; $replace = $CommandArgs -contains '--replace'
         $ref = Get-ReferenceToken ($CommandArgs | Select-Object -Skip 4)
         $point = Resolve-Point $w $CommandArgs[1] $CommandArgs[2] $ref
+        Assert-SafeSemanticAction $point.SemanticElement 'L2 UIA-map input click' -ActionControlsOnly
         $sendIndex = [Array]::IndexOf($CommandArgs, 'send'); $sendPoint = $null
         if ($sendIndex -ge 0) {
             Stop-Hu 'refused: op 不执行发送/提交的最终点击；内容可填好，但按钮留给用户。--force 不绕过。' 2
@@ -1612,12 +1688,79 @@ switch ($Command.ToLowerInvariant()) {
             }
             return [pscustomobject]@{ Known = $true; Owned = $false; Owners = $owners; Reason = '监听进程不属于目标 exe/进程树' }
         }
+        function Get-CdpSessionPath([int]$Port) {
+            $override = [Environment]::GetEnvironmentVariable('WIN_USE_MASTER_CDP_SESSION')
+            if (-not [string]::IsNullOrWhiteSpace($override)) { return Get-AbsolutePath $override }
+            $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+            return Join-Path $local "win-use-master\sessions\cdp-$Port.json"
+        }
+        function Write-CdpSessionManifest([int]$Port, [string]$ExePath, [int[]]$OwnerPids) {
+            $ownerRows = @()
+            foreach ($ownerPid in @($OwnerPids | Sort-Object -Unique)) {
+                try {
+                    $proc = Get-Process -Id $ownerPid -ErrorAction Stop
+                    $ownerRows += [ordered]@{
+                        pid = [int]$proc.Id
+                        executablePath = [IO.Path]::GetFullPath($proc.Path)
+                        startTimeUtc = $proc.StartTime.ToUniversalTime().ToString('o')
+                    }
+                } catch {
+                    Stop-Hu "refused: CDP owner pid=$ownerPid 在授权落盘前已消失或身份不可读；请重新运行 open --cdp。" 2
+                }
+            }
+            if (-not $ownerRows.Count) { Stop-Hu 'refused: CDP 授权没有可绑定的监听进程。' 2 }
+
+            try {
+                $targetResponse = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 2 -Proxy $null
+                $targets = @($targetResponse.Content | ConvertFrom-Json)
+            } catch {
+                Stop-Hu "refused: CDP /json/list 不可读，不能绑定可写 target：$($_.Exception.Message)" 2
+            }
+            $targetIds = @()
+            foreach ($target in $targets) {
+                if ($target.type -eq 'page' -and $target.id) {
+                    $targetIds += [string]$target.id
+                }
+            }
+            $targetIds = @($targetIds | Sort-Object -Unique)
+            if (-not $targetIds.Count) { Stop-Hu 'refused: CDP 当前没有可绑定的 page target；不会签发写授权。' 2 }
+
+            $now = [DateTime]::UtcNow
+            $manifest = [ordered]@{
+                schema = 'win-use-master/cdp-session-v1'
+                sessionId = [Guid]::NewGuid().ToString('N')
+                port = $Port
+                createdAt = $now.ToString('o')
+                expiresAt = $now.AddMinutes(30).ToString('o')
+                authorizedApp = [ordered]@{
+                    executableName = if ($ExePath) { [IO.Path]::GetFileName($ExePath) } else { '' }
+                }
+                owners = @($ownerRows)
+                targetIds = @($targetIds)
+            }
+            $sessionPath = Get-CdpSessionPath $Port
+            Ensure-Parent $sessionPath
+            $tempPath = "$sessionPath.$([Guid]::NewGuid().ToString('N')).tmp"
+            try {
+                $json = $manifest | ConvertTo-Json -Depth 6
+                [IO.File]::WriteAllText($tempPath, $json + "`n", [Text.UTF8Encoding]::new($false))
+                [IO.File]::Move($tempPath, $sessionPath, $true)
+            } finally {
+                if ([IO.File]::Exists($tempPath)) { [IO.File]::Delete($tempPath) }
+            }
+            return $sessionPath
+        }
         $existingCdp = if ($port) { Get-CdpInfo $port } else { $null }
         if ($existingCdp) {
             $ownership = Get-CdpPortOwnership $port $path $running
             if (-not $ownership.Known) { Stop-Hu "refused: 端口 $port 返回 CDP，但无法确认监听进程归属（$($ownership.Reason)）。不会把它当成目标 app。" 2 }
             if (-not $ownership.Owned) { Stop-Hu "refused: 端口 $port 已被其它 CDP 占用（owner pid=$($ownership.Owners -join ',')）。不会控制错误实例。" 2 }
-            Write-Output "CDP: 127.0.0.1:$port 已通且归属目标（owner pid=$($ownership.Owners -join ',')）。下一步: node `"$PSScriptRoot\cdp.js`" $port list"
+            if ($script:Dry) {
+                Write-Output "dry: CDP 127.0.0.1:$port 已通且归属目标（owner pid=$($ownership.Owners -join ',')）；未写入授权会话。"
+                break
+            }
+            $sessionPath = Write-CdpSessionManifest $port $path $ownership.Owners
+            Write-Output "CDP: 127.0.0.1:$port 已通且归属目标（owner pid=$($ownership.Owners -join ',')），写授权有效 30 分钟 session=$sessionPath。下一步: node `"$PSScriptRoot\cdp.js`" $port list"
             break
         }
         if ($port -and $running.Count) {
@@ -1645,7 +1788,8 @@ switch ($Command.ToLowerInvariant()) {
             if (-not $ownership.Known -or -not $ownership.Owned) {
                 Stop-Hu "effect=unknown: app 已启动，端口 $port 也返回 CDP，但无法证明二者属于同一实例（owner pid=$($ownership.Owners -join ',')；$($ownership.Reason)）。不会继续控制。" 2
             }
-            Write-Output "CDP: 127.0.0.1:$port 已通且归属新实例（owner pid=$($ownership.Owners -join ',')）。下一步: node `"$PSScriptRoot\cdp.js`" $port list"
+            $sessionPath = Write-CdpSessionManifest $port $path $ownership.Owners
+            Write-Output "CDP: 127.0.0.1:$port 已通且归属新实例（owner pid=$($ownership.Owners -join ',')），写授权有效 30 分钟 session=$sessionPath。下一步: node `"$PSScriptRoot\cdp.js`" $port list"
         } elseif ($path) {
             $launched = Start-HuProcess $path '' -NoActivate:$background
             if (-not $background) { Write-Output "已启动: $path pid=$($launched.Id)" }

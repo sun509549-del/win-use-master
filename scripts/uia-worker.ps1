@@ -14,6 +14,40 @@ function Complete-Worker($Payload, [int] $Code = 0) {
     exit $Code
 }
 
+function Get-RiskPolicy {
+    $path = Join-Path (Split-Path -Parent $PSScriptRoot) 'config\risk-actions.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy unavailable' } 2
+    }
+    try {
+        $policy = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json
+    } catch {
+        Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy invalid' } 2
+    }
+    if ([string]$policy.schema -ne 'win-use-master/risk-actions-v1' -or
+        -not @($policy.blockedTextPatterns).Count -or
+        @($policy.blockedKeyChords) -notcontains 'Enter' -or
+        @($policy.blockedDomSemantics) -notcontains 'form-submit') {
+        Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy schema mismatch' } 2
+    }
+    return $policy
+}
+
+function Find-BlockedActionRule($Policy, [string] $Text) {
+    $normalized = if ($null -eq $Text) { '' } else { $Text.Normalize([Text.NormalizationForm]::FormKC) }
+    $normalized = [regex]::Replace($normalized, '([a-z0-9])([A-Z])', '$1 $2') -replace '[_-]+', ' '
+    foreach ($rule in @($Policy.blockedTextPatterns)) {
+        try {
+            if ([regex]::IsMatch($normalized, [string]$rule.pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+                return [string]$rule.id
+            }
+        } catch {
+            Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy pattern invalid' } 2
+        }
+    }
+    return $null
+}
+
 function Public-Element($Item) {
     return [ordered]@{
         ref = $Item.Ref; name = $Item.Name; controlType = $Item.ControlType
@@ -152,11 +186,11 @@ function Resolve-Element($Elements, [string] $Reference, $Spec) {
     }
     if ($Reference -notmatch '^e\d+$') { return @() }
     if ($null -eq $Spec) { return @($Elements | Where-Object Ref -EQ $Reference | Select-Object -First 1) }
-    $candidates = if ([string]$Spec.automationId) {
-        @($Elements | Where-Object AutomationId -EQ ([string]$Spec.automationId))
+    $candidates = @(if ([string]$Spec.automationId) {
+        $Elements | Where-Object AutomationId -EQ ([string]$Spec.automationId)
     } else {
-        @($Elements | Where-Object { $_.Name -eq [string]$Spec.name -and $_.ControlType -eq [string]$Spec.controlType })
-    }
+        $Elements | Where-Object { $_.Name -eq [string]$Spec.name -and $_.ControlType -eq [string]$Spec.controlType }
+    })
     if (-not $candidates.Count) { return @() }
     return @($candidates | Sort-Object @{ Expression = {
         [Math]::Pow($_.Cx - [double]$Spec.cx, 2) + [Math]::Pow($_.Cy - [double]$Spec.cy, 2)
@@ -217,8 +251,15 @@ try {
     }
 
     if ($mode -eq 'invoke') {
-        if ($item.Name -match '(删除|清空|发布|提交|发送|支付|付款|购买|下单|卸载|安装|授权|同意|保存|覆盖|delete|remove|publish|submit|send|post|pay|buy|purchase|uninstall|install|authorize|agree|save|overwrite)') {
-            Complete-Worker @{ ok = $false; refused = $true; error = 'sensitive action name refused' } 2
+        $riskPolicy = Get-RiskPolicy
+        $semanticIdentity = @($item.Name, $item.AutomationId, $item.ClassName) -join ' '
+        $blockedRule = Find-BlockedActionRule $riskPolicy $semanticIdentity
+        if ($blockedRule) {
+            Complete-Worker @{ ok = $false; refused = $true; error = "high-risk final action refused by $blockedRule" } 2
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$item.Name) -and
+            [string]$item.ControlType -in @('Button','Hyperlink','MenuItem')) {
+            Complete-Worker @{ ok = $false; refused = $true; error = 'unlabeled action target refused' } 2
         }
         $pattern = $null; $used = ''
         if ($item.Element.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) { $pattern.Invoke(); $used = 'InvokePattern' }

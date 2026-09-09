@@ -13,19 +13,22 @@
 //   node cdp.js <port> snapshot <target> [--all]        # 列出可交互元素并打 ref（默认只列视口内可见）
 //   node cdp.js <port> find  <target> '<文本>' [--role button] [--all]   # 按文本/aria-label/placeholder 模糊找元素
 //   node cdp.js <port> wait  <target> <条件> [超时秒=10]  # 条件: css选择器 | text:<文本> | gone:<选择器>
-//   node cdp.js <port> eval  <target> '<js表达式>'      # 返回值 JSON 化后打印
+//   node cdp.js <port> inspect <target> '<选择器>'       # 脱敏读取控件角色、状态、字符数与占位符
+//   node cdp.js <port> eval  <target> '<js表达式>'      # 只读求值；检测到可能副作用则拒绝（eval-read 同义）
+//   node cdp.js <port> eval-unsafe <target> '<js表达式>' --allow-side-effects [--receipt <路径>]
+//                                                        # 任意脚本写入；必须显式确认并留下回执
 //   node cdp.js <port> click <target> '<选择器>' [--receipt <路径>]       # 真实 DOM click()
 //   node cdp.js <port> text  <target> '<选择器>' '<文本>' [--receipt <路径>] # 给输入框写值并派发 input/change
 //   node cdp.js <port> mouse <target> '<选择器>' [--receipt <路径>]       # 渲染器级真实鼠标点击，之后打印 DOM 差分
 //   node cdp.js <port> insert <target> '<选择器或空>' '<文本>' [--receipt <路径>] # Input.insertText（输入法上屏）
-//   node cdp.js <port> press <target> <Enter|Escape|Backspace|SelectAll|Slash|At> [选择器] [--receipt <路径>]
-//                                                        # SelectAll=Ctrl+A，配 Backspace 可撤回刚 insert 的内容
+//   node cdp.js <port> press <target> <Escape|Backspace|SelectAll|Slash|At> [选择器] [--receipt <路径>]
+//                                                        # Enter 属最终动作会拒绝；SelectAll+Backspace 可撤回 insert
 //   node cdp.js <port> shot  <target> <输出路径> [选择器]  # 整页或单元素截图
 //   node cdp.js <port> html  <target> [选择器]           # 打印 outerHTML（默认 body，截断 20000 字）
 //   node cdp.js <port> act   <target> <脚本文件|内联脚本|-> [--receipt <路径>] # 一次会话顺序执行多步（见下）
 //
-// <target> 可以是 target id，也可以是 title/url 的子串（取第一个 type=page 的匹配）。
-// 特殊值 auto = 第一个 type=page 且 url 不含 background 的 target。
+// <target> 可以是 target id，也可以是 title/url 的子串；子串匹配不唯一时拒绝。
+// 特殊值 auto 会给非 background page 评分；授权集合含多个 page 时写操作禁止 auto。
 //
 // 选择器：所有接选择器的地方都接受 ref=eN 或 eN（snapshot/find 打出来的 ref），
 // 内部转成 [data-hs-ref="eN"]。ref 是打在元素上的属性，页面刷新后失效，重新 snapshot 即可。
@@ -37,15 +40,17 @@
 //   find "文本" [--role button]      # 结果第一条的 ref 记为 $last，后续步骤可用
 //   mouse <ref或选择器>
 //   insert <ref或选择器或-> "文本"    # - 表示不切焦点直接上屏
-//   press Enter [ref或选择器]
+//   press <Escape|Backspace|SelectAll|Slash|At> [ref或选择器]  # Enter 拒绝
 //   wait <条件> [秒]
 //   shot <路径> [选择器]
-//   eval <js>
+//   eval-read <js>                    # 只允许能证明无副作用的表达式
 //   sleep <秒>
 //   snapshot [--all]
 // 任一步 wait 返回 unknown、find 零命中、元素找不到，就停下并打印已完成到第几步，退出码 2。
 // 脚本参数可以是文件路径、内联多行字符串，或 - 表示从 stdin 读。
-// click/text/mouse/insert/press/act 都会写 action-receipt-v1；未指定 --receipt 时写到系统临时目录。
+// click/text/mouse/insert/press/eval-unsafe/act 都要求先由 win.ps1 open --cdp 签发 30 分钟会话，
+// 每次写入前复核端口 owner 的 PID/路径/启动时间与 target id，并写 action-receipt-v1。
+// 未指定 --receipt 时，动作回执写到系统临时目录。
 // 收据不落输入正文或原始 CSS，只留长度、选择器类型/哈希、目标身份和动作前后语义摘要。
 // HTTP/连接各限 5 秒，单次 CDP 请求限 6 秒；act 最多 200 步/120 秒。超时退出 2 并写 unknown 收据。
 
@@ -56,7 +61,10 @@ const fs = require('node:fs');
 const pathUtil = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const MUTATING_COMMANDS = new Set(['click', 'text', 'mouse', 'insert', 'press', 'act']);
+const childProcess = require('node:child_process');
+const MUTATING_COMMANDS = new Set(['click', 'text', 'mouse', 'insert', 'press', 'act', 'eval-unsafe']);
+const RISK_POLICY_SCHEMA = 'win-use-master/risk-actions-v1';
+let riskPolicyCache = null;
 const HTTP_TIMEOUT_MS = 5000;
 const WS_CONNECT_TIMEOUT_MS = 5000;
 const CDP_REQUEST_TIMEOUT_MS = 6000;
@@ -94,8 +102,8 @@ async function pickTargetAuto(targets) {
   const allCands = targets.filter(t => t.type === 'page' && !/background|devtools/i.test(t.url));
   const cands = allCands.slice(0, AUTO_TARGET_LIMIT);
   if (allCands.length > cands.length) console.error(`auto: target 候选 ${allCands.length} 个，只评分前 ${AUTO_TARGET_LIMIT} 个`);
-  if (cands.length <= 1) return cands[0] || targets[0];
-  let best = null, bestScore = -1;
+  if (cands.length <= 1) return cands[0] || null;
+  const scored = [];
   for (const t of cands) {
     let score = 0;
     try {
@@ -104,26 +112,145 @@ async function pickTargetAuto(targets) {
         const r = await s.send('Runtime.evaluate', {
           expression: `(document.visibilityState==='visible' ? innerWidth*innerHeight : 0)
             + document.querySelectorAll('button,a[href],input,textarea,[contenteditable],[role=button]').length * 1000`,
-          returnByValue: true, awaitPromise: true, userGesture: true,
+          returnByValue: true, awaitPromise: true, userGesture: false,
         }, AUTO_TARGET_TIMEOUT_MS);
         score = r.result?.value || 0;
       } finally { s.close(); }
     } catch { score = 0; }
-    if (score > bestScore) { bestScore = score; best = t; }
+    scored.push({ target: t, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const best = scored[0]?.target;
+  if (!best) return null;
+  if (scored.length > 1 && scored[0].score === scored[1].score) {
+    throw new CdpRefusalError(`refused: auto target 最高分并列（score=${scored[0].score}），请运行 list 后使用明确 target id`);
   }
   console.error(`auto → ${(best.title || '').slice(0, 30)} (${best.url.slice(0, 60)})  # 下次可直接指定这个 title/url 子串`);
   return best;
 }
 function pickTarget(targets, sel) {
-  return (
-    targets.find(t => t.id === sel) ||
-    targets.find(t => t.type === 'page' && (t.title.includes(sel) || t.url.includes(sel))) ||
-    targets.find(t => t.title.includes(sel) || t.url.includes(sel))
-  );
+  const exact = targets.filter(t => t.id === sel);
+  if (exact.length === 1) return exact[0];
+  const pageMatches = targets.filter(t => t.type === 'page' && (t.title.includes(sel) || t.url.includes(sel)));
+  const matches = pageMatches.length ? pageMatches : targets.filter(t => t.title.includes(sel) || t.url.includes(sel));
+  if (matches.length > 1) {
+    const candidates = matches.slice(0, 8).map(t => `${t.type} id=${t.id} title=${JSON.stringify(String(t.title || '').slice(0, 60))}`).join('\n  ');
+    throw new CdpRefusalError(`refused: target 选择器匹配 ${matches.length} 项，不会自动选择\n  ${candidates}\n请使用明确 target id`);
+  }
+  return matches[0];
 }
 
 class CdpTimeoutError extends Error {
   constructor(message) { super(message); this.name = 'CdpTimeoutError'; this.code = 'CDP_TIMEOUT'; }
+}
+
+class CdpRefusalError extends Error {
+  constructor(message) { super(message); this.name = 'CdpRefusalError'; this.code = 'CDP_REFUSED'; }
+}
+
+function getRiskPolicy() {
+  if (riskPolicyCache) return riskPolicyCache;
+  const policyPath = pathUtil.join(__dirname, '..', 'config', 'risk-actions.json');
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(policyPath, 'utf8')); }
+  catch (e) { throw new CdpRefusalError(`refused: 高风险动作规则不可用或无法解析: ${policyPath}`); }
+  if (raw.schema !== RISK_POLICY_SCHEMA || !Array.isArray(raw.blockedTextPatterns) || !raw.blockedTextPatterns.length ||
+      !Array.isArray(raw.blockedKeyChords) || !raw.blockedKeyChords.includes('Enter') ||
+      !Array.isArray(raw.blockedDomSemantics) || !raw.blockedDomSemantics.includes('form-submit')) {
+    throw new CdpRefusalError('refused: 高风险动作规则 schema 不匹配');
+  }
+  try {
+    riskPolicyCache = {
+      ...raw,
+      compiledTextPatterns: raw.blockedTextPatterns.map(rule => ({
+        id: String(rule.id || 'unnamed-rule'), regex: new RegExp(String(rule.pattern), String(rule.flags || 'i')),
+      })),
+    };
+  } catch (e) {
+    throw new CdpRefusalError('refused: 高风险动作规则包含无效表达式');
+  }
+  return riskPolicyCache;
+}
+
+function riskRefusal(ruleId, message) {
+  const error = new CdpRefusalError(`refused: ${message}；没有执行。规则=${ruleId}`);
+  error.riskGuard = { schema: RISK_POLICY_SCHEMA, decision: 'refused', ruleId };
+  throw error;
+}
+
+function cdpSessionPath(port) {
+  if (process.env.WIN_USE_MASTER_CDP_SESSION) return pathUtil.resolve(process.env.WIN_USE_MASTER_CDP_SESSION);
+  const local = process.env.LOCALAPPDATA || pathUtil.join(os.homedir(), 'AppData', 'Local');
+  return pathUtil.join(local, 'win-use-master', 'sessions', `cdp-${port}.json`);
+}
+
+function queryCdpPortOwners(port) {
+  const numericPort = Number(port);
+  if (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535) {
+    throw new CdpRefusalError(`refused: 无效 CDP 端口 ${port}`);
+  }
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    `$rows=@(Get-NetTCPConnection -State Listen -LocalPort ${numericPort} -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {`,
+    '  $p=Get-Process -Id $_ -ErrorAction Stop',
+    "  [pscustomobject]@{pid=[int]$p.Id;executablePath=[IO.Path]::GetFullPath($p.Path);startTimeUtc=$p.StartTime.ToUniversalTime().ToString('o')}",
+    '})',
+    'ConvertTo-Json -InputObject $rows -Compress',
+  ].join(';');
+  try {
+    const shell = process.env.WIN_USE_MASTER_PWSH || 'pwsh';
+    const raw = childProcess.execFileSync(shell, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8', timeout: 6000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    const rows = raw ? JSON.parse(raw) : [];
+    return Array.isArray(rows) ? rows : [rows];
+  } catch (e) {
+    const detail = String(e.stderr || e.message || e).trim().slice(0, 300);
+    throw new CdpRefusalError(`refused: 无法独立读取 CDP 端口 owner 身份：${detail}`);
+  }
+}
+
+function validateCdpSession(port, expectedSessionId = null) {
+  const path = cdpSessionPath(port);
+  let session;
+  try { session = JSON.parse(fs.readFileSync(path, 'utf8')); }
+  catch (e) {
+    throw new CdpRefusalError(`refused: CDP 写操作需要有效授权会话。先运行 win.ps1 open <app> --cdp ${port}；session=${path}`);
+  }
+  if (session.schema !== 'win-use-master/cdp-session-v1' || Number(session.port) !== Number(port) || !session.sessionId) {
+    throw new CdpRefusalError('refused: CDP 授权会话 schema、端口或 sessionId 不匹配；请重新运行 open --cdp');
+  }
+  if (expectedSessionId && session.sessionId !== expectedSessionId) {
+    throw new CdpRefusalError('refused: CDP 授权会话在目标选择期间被替换；请重新读取 target 后再执行');
+  }
+  const expires = Date.parse(session.expiresAt);
+  if (!Number.isFinite(expires) || expires <= Date.now()) {
+    throw new CdpRefusalError('refused: CDP 写授权已过期；请重新运行 open --cdp');
+  }
+  const expectedOwners = Array.isArray(session.owners) ? session.owners : [];
+  const currentOwners = queryCdpPortOwners(port);
+  if (!expectedOwners.length || currentOwners.length !== expectedOwners.length) {
+    throw new CdpRefusalError('refused: CDP 监听进程集合与授权会话不一致；端口可能已被复用');
+  }
+  const currentByPid = new Map(currentOwners.map(owner => [Number(owner.pid), owner]));
+  for (const expected of expectedOwners) {
+    const current = currentByPid.get(Number(expected.pid));
+    const samePath = current && String(current.executablePath || '').toLowerCase() === String(expected.executablePath || '').toLowerCase();
+    const sameStart = current && String(current.startTimeUtc || '') === String(expected.startTimeUtc || '');
+    if (!current || !samePath || !sameStart) {
+      throw new CdpRefusalError(`refused: CDP owner pid=${expected.pid} 的路径或启动时间已变化；不会信任复用的 PID/端口`);
+    }
+  }
+  if (!Array.isArray(session.targetIds) || !session.targetIds.length) {
+    throw new CdpRefusalError('refused: CDP 授权会话没有可写 target 集合');
+  }
+  return { ...session, manifestPath: path };
+}
+
+function assertAuthorizedTarget(session, target) {
+  if (!target || !session.targetIds.includes(target.id)) {
+    throw new CdpRefusalError(`refused: target id=${target?.id || 'none'} 不在本次 CDP 写授权中；请重新运行 open --cdp`);
+  }
 }
 
 function connect(wsUrl, connectTimeoutMs = WS_CONNECT_TIMEOUT_MS) {
@@ -182,14 +309,29 @@ function connect(wsUrl, connectTimeoutMs = WS_CONNECT_TIMEOUT_MS) {
   });
 }
 
-async function evaluate(sess, expr) {
+async function evaluate(sess, expr, options = {}) {
   const r = await sess.send('Runtime.evaluate', {
     expression: expr,
     returnByValue: true,
     awaitPromise: true,
-    userGesture: true, // 有些控件只认用户手势触发的事件
+    userGesture: !!options.userGesture,
   });
   if (r.exceptionDetails) throw new Error('JS 异常: ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
+  return r.result?.value;
+}
+
+async function evaluateReadOnly(sess, expr) {
+  const r = await sess.send('Runtime.evaluate', {
+    expression: expr,
+    returnByValue: true,
+    awaitPromise: true,
+    userGesture: false,
+    throwOnSideEffect: true,
+  });
+  if (r.exceptionDetails) {
+    const detail = JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails.text || r.exceptionDetails);
+    throw new CdpRefusalError('refused: eval 只允许浏览器能证明无副作用的表达式；需要写入时改用 eval-unsafe --allow-side-effects。详情: ' + detail);
+  }
   return r.result?.value;
 }
 
@@ -331,24 +473,110 @@ async function withDiff(sess, action, settleMs = 300) {
 }
 
 // ---------- 各命令 ----------
-async function doEval(sess, expr) {
-  const out = await evaluate(sess, expr);
+async function doEvalReadOnly(sess, expr) {
+  const out = await evaluateReadOnly(sess, expr);
   console.log(typeof out === 'string' ? out : JSON.stringify(out, null, 2));
 }
 
+async function doEvalUnsafe(sess, expr) {
+  const observed = await withDiff(sess, async () => {
+    const out = await evaluate(sess, expr, { userGesture: true });
+    console.log(typeof out === 'string' ? out : JSON.stringify(out, null, 2));
+  });
+  // Arbitrary JavaScript can change network/server/storage state without any
+  // visible DOM difference. Preserve the observed DOM digest, but never claim
+  // that it proves the total side effect.
+  return { ...observed, observedDomEffect: observed.effect, effect: 'unknown' };
+}
+
+async function doInspect(sess, sel) {
+  if (!sel) throw new Error('inspect 需要选择器');
+  const out = await evaluate(
+    sess,
+    `(() => { const el=document.querySelector(${jsStr(resolveSel(sel))}); if(!el) return null;
+      const r=el.getBoundingClientRect(); const cs=getComputedStyle(el);
+      const tag=el.tagName.toLowerCase(); const role=el.getAttribute('role') || '';
+      let value;
+      if(tag==='input'||tag==='textarea') value=el.value;
+      else { const copy=el.cloneNode(true); copy.querySelectorAll('[data-slate-placeholder]').forEach(x=>x.remove()); value=copy.textContent; }
+      return { found:true, tag, role, editable:!!(el.isContentEditable||tag==='input'||tag==='textarea'||role==='textbox'||role==='searchbox'),
+        disabled:!!(el.disabled||el.getAttribute('aria-disabled')==='true'),
+        visible:r.width>0&&r.height>0&&cs.visibility!=='hidden'&&cs.display!=='none',
+        textLength:String(value||'').length,
+        placeholderVisible:!!el.querySelector('[data-slate-placeholder]'),
+        placeholderPresent:!!(el.getAttribute('placeholder')||el.getAttribute('data-placeholder')) }; })()`
+  );
+  if (!out) throw new Error('元素未找到: ' + sel);
+  console.log(JSON.stringify(out));
+  return out;
+}
+
+async function inspectActionSemantic(sess, sel) {
+  if (!sel) throw new Error('动作需要选择器');
+  return evaluate(
+    sess,
+    `(() => { const el=document.querySelector(${jsStr(resolveSel(sel))}); if(!el) return null;
+      const tag=el.tagName.toLowerCase(); const type=String(el.getAttribute('type')||'').toLowerCase();
+      const role=String(el.getAttribute('role')||'').toLowerCase();
+      const norm=s=>(s==null?'':String(s)).normalize('NFKC').replace(/([a-z0-9])([A-Z])/g,'$1 $2').replace(/[_-]+/g,' ').replace(/\\s+/g,' ').trim();
+      const value=(tag==='input'&&['button','submit','reset','image'].includes(type))?norm(el.value):'';
+      const parts=[norm(el.innerText),norm(el.textContent),norm(el.getAttribute('aria-label')),
+        norm(el.getAttribute('title')),value,norm(el.getAttribute('alt')),
+        norm(el.getAttribute('data-testid')),norm(el.getAttribute('data-test-id')),
+        norm(el.getAttribute('name')),norm(el.id)];
+      const semanticText=parts.filter(Boolean).join(' ').slice(0,1200);
+      const formSubmit=(tag==='input'&&(type==='submit'||type==='image'))||
+        (tag==='button'&&!!el.form&&(type===''||type==='submit'));
+      const actionLike=tag==='button'||tag==='a'||!!el.getAttribute('onclick')||
+        ['button','submit','reset','image','checkbox','radio'].includes(type)||
+        ['button','link','menuitem','checkbox','radio','switch'].includes(role);
+      return {semanticText,unlabeled:parts.slice(0,6).every(x=>!x),formSubmit,actionLike}; })()`
+  );
+}
+
+async function assertSafeActionTarget(sess, sel) {
+  const policy = getRiskPolicy();
+  const semantic = await inspectActionSemantic(sess, sel);
+  if (!semantic) throw new Error('元素未找到: ' + sel);
+  if (semantic.actionLike) {
+    for (const rule of policy.compiledTextPatterns) {
+      rule.regex.lastIndex = 0;
+      if (rule.regex.test(String(semantic.semanticText || ''))) {
+        riskRefusal(rule.id, 'CDP 目标语义命中高风险最终动作');
+      }
+    }
+  }
+  if (semantic.formSubmit && policy.blockedDomSemantics?.includes('form-submit')) {
+    riskRefusal('form-submit', 'CDP 目标具有表单提交语义');
+  }
+  if (semantic.actionLike && semantic.unlabeled) riskRefusal('unlabeled-action', 'CDP 动作目标没有可核对标签');
+  return { schema: policy.schema, decision: 'passed' };
+}
+
+function assertSafeCdpKey(key) {
+  const policy = getRiskPolicy();
+  if (policy.blockedKeyChords?.includes(String(key))) {
+    riskRefusal(`key:${key}`, `CDP 按键 ${key} 可能直接提交、保存或关闭`);
+  }
+  return { schema: policy.schema, decision: 'passed' };
+}
+
 async function doClick(sess, sel) {
-  return withDiff(sess, async () => {
+  const riskGuard = await assertSafeActionTarget(sess, sel);
+  const trace = await withDiff(sess, async () => {
     const out = await evaluate(
       sess,
       `(() => { const el = document.querySelector(${jsStr(resolveSel(sel))});
         if (!el) return 'NOT_FOUND';
         el.scrollIntoView({block:'center'});
         el.click();
-        return 'clicked: ' + (el.innerText||el.getAttribute('aria-label')||el.tagName).slice(0,60); })()`
+        return 'clicked: ' + (el.innerText||el.getAttribute('aria-label')||el.tagName).slice(0,60); })()`,
+      { userGesture: true }
     );
     console.log(out);
     if (out === 'NOT_FOUND') throw new Error('元素未找到: ' + sel);
   });
+  return { ...trace, riskGuard };
 }
 
 async function doText(sess, sel, value) {
@@ -366,7 +594,8 @@ async function doText(sess, sel, value) {
         }
         el.dispatchEvent(new InputEvent('input',{bubbles:true,data:v,inputType:'insertText'}));
         el.dispatchEvent(new Event('change',{bubbles:true}));
-        return 'typed into ' + el.tagName + ' len=' + v.length; })()`
+        return 'typed into ' + el.tagName + ' len=' + v.length; })()`,
+      { userGesture: true }
     );
     console.log(out);
     if (out === 'NOT_FOUND') throw new Error('元素未找到: ' + sel);
@@ -377,7 +606,8 @@ async function doMouse(sess, sel) {
   // Input.dispatchMouseEvent：渲染器层面的真实鼠标事件，坐标是页面内 CSS 像素。
   // 比 el.click() 强一层——很多组件库（mantine/radix/tiptap 菜单）只认真实指针事件。
   // 仍然不需要 OS 焦点，不受窗口遮挡与 Windows 虚拟桌面影响。
-  return withDiff(sess, async () => {
+  const riskGuard = await assertSafeActionTarget(sess, sel);
+  const trace = await withDiff(sess, async () => {
     const box = await evaluate(
       sess,
       `(() => { const el=document.querySelector(${jsStr(resolveSel(sel))}); if(!el) return null;
@@ -393,6 +623,7 @@ async function doMouse(sess, sel) {
     }
     console.log(`mouse click @(${box.x.toFixed(0)},${box.y.toFixed(0)}) → ${box.label}`);
   });
+  return { ...trace, riskGuard };
 }
 
 async function doInsert(sess, sel, text) {
@@ -400,7 +631,7 @@ async function doInsert(sess, sel, text) {
   // 比 DOM 的 el.value= 可靠得多——后者常见「字画进 UI 但发送键仍是灰的」。
   return withDiff(sess, async () => {
     if (sel && sel !== '-') {
-      const r = await evaluate(sess, `(() => { const el=document.querySelector(${jsStr(resolveSel(sel))}); if(!el) return 'NOT_FOUND'; el.focus(); return 'focused'; })()`);
+      const r = await evaluate(sess, `(() => { const el=document.querySelector(${jsStr(resolveSel(sel))}); if(!el) return 'NOT_FOUND'; el.focus(); return 'focused'; })()`, { userGesture: true });
       if (r === 'NOT_FOUND') throw new Error('焦点元素未找到: ' + sel);
     }
     await sess.send('Input.insertText', { text: String(text ?? '') });
@@ -423,9 +654,10 @@ async function doPress(sess, key, sel) {
   };
   const k = map[key];
   if (!k) throw new Error('未知按键: ' + key + '（可用: ' + Object.keys(map).join('/') + '）');
-  return withDiff(sess, async () => {
+  const riskGuard = assertSafeCdpKey(key);
+  const trace = await withDiff(sess, async () => {
     if (sel) {
-      const r = await evaluate(sess, `(() => { const el=document.querySelector(${jsStr(resolveSel(sel))}); if(!el) return 'NOT_FOUND'; el.focus(); return 'focused'; })()`);
+      const r = await evaluate(sess, `(() => { const el=document.querySelector(${jsStr(resolveSel(sel))}); if(!el) return 'NOT_FOUND'; el.focus(); return 'focused'; })()`, { userGesture: true });
       if (r === 'NOT_FOUND') throw new Error('焦点元素未找到: ' + sel);
     }
     await sess.send('Input.dispatchKeyEvent', { type: 'keyDown', ...k });
@@ -433,6 +665,7 @@ async function doPress(sess, key, sel) {
     await sess.send('Input.dispatchKeyEvent', { type: 'keyUp', ...k });
     console.log(`press: ${key}`);
   });
+  return { ...trace, riskGuard };
 }
 
 async function doHtml(sess, sel) {
@@ -571,16 +804,27 @@ function selectorReceipt(sel) {
 }
 
 function directActionReceipt(kind, args) {
-  if (kind === 'click' || kind === 'mouse') return { kind, selector: selectorReceipt(args[1]) };
+  if (kind === 'click' || kind === 'mouse') return { kind, selector: selectorReceipt(args[1]), riskPolicy: RISK_POLICY_SCHEMA };
   if (kind === 'text' || kind === 'insert') {
     return { kind, selector: selectorReceipt(args[1]), textLength: String(args[2] ?? '').length };
   }
-  if (kind === 'press') return { kind, key: String(args[1] || ''), selector: args[2] ? selectorReceipt(args[2]) : { kind: 'current_focus' } };
+  if (kind === 'press') return { kind, key: String(args[1] || ''), selector: args[2] ? selectorReceipt(args[2]) : { kind: 'current_focus' }, riskPolicy: RISK_POLICY_SCHEMA };
   if (kind === 'act') {
     const source = args[1] === '-' ? 'stdin' : (() => {
       try { return fs.statSync(args[1]).isFile() ? 'file' : 'inline'; } catch { return 'inline'; }
     })();
-    return { kind, scriptSource: source };
+    return { kind, scriptSource: source, riskPolicy: RISK_POLICY_SCHEMA };
+  }
+  if (kind === 'eval-unsafe') {
+    const expression = String(args[1] ?? '');
+    return {
+      kind,
+      expression: {
+        sha256: crypto.createHash('sha256').update(expression).digest('hex'),
+        length: expression.length,
+      },
+      explicitSideEffects: true,
+    };
   }
   return { kind };
 }
@@ -622,7 +866,7 @@ function combineActTrace(events, stopped) {
   };
 }
 
-function writeActionReceipt(requestedPath, target, action, trace, startedAt, outcome, error) {
+function writeActionReceipt(requestedPath, target, action, trace, startedAt, outcome, error, session) {
   const out = requestedPath
     ? pathUtil.resolve(requestedPath)
     : pathUtil.join(os.tmpdir(), `win-use-master-cdp-action-${crypto.randomUUID()}.receipt.json`);
@@ -634,6 +878,13 @@ function writeActionReceipt(requestedPath, target, action, trace, startedAt, out
     durationMs: completedAt.getTime() - startedAt.getTime(),
     method: 'Chrome DevTools Protocol', cdpPort: Number(PORT),
     target: safeTarget(target), action,
+    authorization: session ? {
+      schema: session.schema,
+      sessionId: session.sessionId,
+      expiresAt: session.expiresAt,
+      ownerPids: session.owners.map(owner => Number(owner.pid)),
+      targetBound: session.targetIds.includes(target?.id),
+    } : null,
     focus: { borrowed: false, seconds: 0 },
     verification: {
       effect: trace?.effect || 'unknown',
@@ -644,6 +895,7 @@ function writeActionReceipt(requestedPath, target, action, trace, startedAt, out
       status: outcome,
       ...(error ? { errorType: error.name || 'Error', timedOut: error instanceof CdpTimeoutError } : {}),
     },
+    riskGuard: error?.riskGuard || trace?.riskGuard || null,
   };
   if (trace?.events) receipt.events = trace.events;
   fs.writeFileSync(out, JSON.stringify(receipt, null, 2) + '\n', 'utf8');
@@ -702,7 +954,10 @@ async function doAct(sess, scriptArg, target) {
         const r = await doWait(sess, sub(args[0]), Math.min(requestedSeconds, remainingSeconds));
         if (r !== 'satisfied') throw new StopAct('wait ' + r);
       } else if (op === 'shot') await doShot(sess, args[0], args[1] && sub(args[1]), target);
-      else if (op === 'eval') await doEval(sess, line.replace(/^eval\s+/, ''));
+      else if (op === 'eval-read') await doEvalReadOnly(sess, line.replace(/^eval-read\s+/, ''));
+      else if (op === 'eval' || op === 'eval-unsafe') {
+        throw new StopAct('act 不允许任意脚本写入；请使用受限 eval-read，或在 act 外单独运行 eval-unsafe 并审查其回执');
+      }
       else if (op === 'sleep') {
         const sleepMs = (Number(args[0]) || 1) * 1000;
         if (sleepMs < 0 || Date.now() + sleepMs > deadline) {
@@ -731,7 +986,18 @@ async function doAct(sess, scriptArg, target) {
 async function main() {
   if (!portArg) { usage(); return; }
   const parsed = parseReceiptFlag(rest);
-  const args = parsed.args;
+  let args = parsed.args;
+  if (cmd === 'eval-unsafe') {
+    const confirmations = args.filter(x => x === '--allow-side-effects').length;
+    if (confirmations !== 1) {
+      throw new CdpRefusalError('refused: eval-unsafe 必须且只能提供一次 --allow-side-effects；表达式可能产生任意页面或网络副作用');
+    }
+    args = args.filter(x => x !== '--allow-side-effects');
+  } else if (args.includes('--allow-side-effects')) {
+    throw new CdpRefusalError('refused: --allow-side-effects 只用于 eval-unsafe');
+  }
+  const mutating = MUTATING_COMMANDS.has(cmd);
+  let cdpSession = mutating ? validateCdpSession(PORT) : null;
   const targets = await listTargets();
 
   if (cmd === 'list' || !cmd) {
@@ -739,16 +1005,29 @@ async function main() {
     return;
   }
 
-  const t = (!args[0] || args[0] === 'auto') ? await pickTargetAuto(targets) : pickTarget(targets, args[0]);
+  const automaticTarget = !args[0] || args[0] === 'auto';
+  if (mutating && automaticTarget && cdpSession.targetIds.length !== 1) {
+    throw new CdpRefusalError(`refused: 本次授权包含 ${cdpSession.targetIds.length} 个 page target，写操作不能使用 auto；请运行 list 并指定准确 target id`);
+  }
+  const selectableTargets = mutating
+    ? targets.filter(target => cdpSession.targetIds.includes(target.id))
+    : targets;
+  const t = automaticTarget ? await pickTargetAuto(selectableTargets) : pickTarget(targets, args[0]);
   if (!t) throw new Error(`找不到 target: ${args[0]}\n可用的:\n` + targets.map(x => `  ${x.type} ${x.title} ${x.url}`).join('\n'));
+  if (mutating) {
+    assertAuthorizedTarget(cdpSession, t);
+    cdpSession = validateCdpSession(PORT, cdpSession.sessionId);
+    assertAuthorizedTarget(cdpSession, t);
+  }
   const sess = await connect(t.webSocketDebuggerUrl);
-  const mutating = MUTATING_COMMANDS.has(cmd);
   const startedAt = new Date();
   let trace = null;
   let actionError = null;
 
   try {
-    if (cmd === 'eval') await doEval(sess, args[1]);
+    if (cmd === 'eval' || cmd === 'eval-read') await doEvalReadOnly(sess, args[1]);
+    else if (cmd === 'eval-unsafe') trace = await doEvalUnsafe(sess, args[1]);
+    else if (cmd === 'inspect') await doInspect(sess, args[1]);
     else if (cmd === 'click') trace = await doClick(sess, args[1]);
     else if (cmd === 'text') trace = await doText(sess, args[1], args[2]);
     else if (cmd === 'mouse') trace = await doMouse(sess, args[1]);
@@ -778,7 +1057,7 @@ async function main() {
           action.stepsCompleted = trace.stepsCompleted;
         }
         writeActionReceipt(parsed.requested, t, action, trace, startedAt,
-          actionError ? 'error' : trace?.stopped ? 'stopped' : 'completed', actionError);
+          actionError instanceof CdpRefusalError ? 'refused' : actionError ? 'error' : trace?.stopped ? 'stopped' : 'completed', actionError, cdpSession);
       }
     } finally { sess.close(); }
   }
@@ -788,5 +1067,5 @@ main().catch(e => {
   console.error('错误: ' + e.message);
   // 不在 WebSocket close 尚未排空时强制 process.exit；Windows 上 Node/libuv
   // 可能因此触发 UV_HANDLE_CLOSING 断言并把确定失败变成异常 NTSTATUS。
-  process.exitCode = e instanceof CdpTimeoutError ? 2 : 1;
+  process.exitCode = e instanceof CdpTimeoutError || e instanceof CdpRefusalError ? 2 : 1;
 });

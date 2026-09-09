@@ -105,14 +105,16 @@ pwsh -NoProfile -File "$SKILL_DIR\scripts\probe.ps1" "notepad.exe"
 node "$SKILL_DIR/scripts/cdp.js" 9333 list
 node "$SKILL_DIR/scripts/cdp.js" 9333 snapshot auto
 node "$SKILL_DIR/scripts/cdp.js" 9333 find auto "发送" --role button
-node "$SKILL_DIR/scripts/cdp.js" 9333 insert auto '#prompt' "文本" --receipt .\evidence\insert.json
+node "$SKILL_DIR/scripts/cdp.js" 9333 insert <target-id> '#prompt' "文本" --receipt .\evidence\insert.json
 ```
 
-CDP 可在窗口被遮挡时读写渲染页面，也能避免抢焦点。但它只覆盖对应渲染 target：系统文件选择框、UAC、原生菜单和另一个进程的 UI 不在里面。`click`、`text`、`mouse`、`insert`、`press`、`act` 都会生成 `action-receipt-v1`；不指定 `--receipt` 时落到系统临时目录。收据保存目标身份、脱敏动作参数、前后可交互 DOM 摘要哈希和 `effect`，不保存输入正文或原始 CSS。输入控件（含 `role=textbox` 的 Slate/ProseMirror 编辑器）的终端差分也只显示长度。撤回刚 `insert` 的内容用 `press SelectAll` 加 `press Backspace`：两者都是真实键事件，编辑器 state 与 DOM 一起回退，`text`（直接改 `textContent`）做不到这一点。HTTP 探测和 WebSocket 连接各限 5 秒，单次 CDP 请求限 6 秒，`act` 最多 200 步/120 秒；修改请求超时按“可能已发生”写 `effect=unknown`、退出 2，不能自动重试。
+CDP 可在窗口被遮挡时读写渲染页面，也能避免抢焦点。但它只覆盖对应渲染 target：系统文件选择框、UAC、原生菜单和另一个进程的 UI 不在里面。`click`/`mouse` 会先读取目标的可见文字、ARIA、title、控件 id/name 和表单语义，并按 `config/risk-actions.json` 拒绝发送/提交/支付/删除等最终动作、隐式 form-submit 和无标签动作控件；`press Enter` 也在聚焦前拒绝。`click`、`text`、`mouse`、`insert`、`press`、`eval-unsafe`、`act` 都会生成 `action-receipt-v1`；不指定 `--receipt` 时落到系统临时目录。收据保存目标身份、脱敏动作参数、前后可交互 DOM 摘要哈希和 `effect`，不保存输入正文、原始 CSS 或原始 eval 表达式。输入控件（含 `role=textbox` 的 Slate/ProseMirror 编辑器）的终端差分也只显示长度。撤回刚 `insert` 的内容用 `press SelectAll` 加 `press Backspace`：两者都是真实键事件，编辑器 state 与 DOM 一起回退，`text`（直接改 `textContent`）做不到这一点。HTTP 探测和 WebSocket 连接各限 5 秒，单次 CDP 请求限 6 秒，`act` 最多 200 步/120 秒；修改请求超时按“可能已发生”写 `effect=unknown`、退出 2，不能自动重试。
+
+`eval-unsafe` 是开发/诊断逃生口，可执行任意 JavaScript，因此不属于上述结构化动作防护面；它不能拿来绕过停手线。命令行上的确认参数只能减少误触，不能证明真人授权。
 
 若必须用 `open --cdp` 给已运行 app 加调试端口，`--relaunch` 会请求 app 正常退出；这可能遇到保存确认框或丢未保存状态。工具不会强杀，操作前必须让用户知情。
 
-端口“能返回 CDP”还不够。`open --cdp` 会同时读取监听 socket 的 owner PID，并确认它属于目标 exe 或目标进程树；归属未知或端口被另一个 CDP 实例占用时会拒绝，避免随后控制错 app。
+端口“能返回 CDP”还不够。`open --cdp` 会同时读取监听 socket 的 owner PID，并确认它属于目标 exe 或目标进程树；归属未知或端口被另一个 CDP 实例占用时会拒绝，避免随后控制错 app。校验成功后会签发 30 分钟 `cdp-session-v1` 写授权，绑定端口、owner PID、exe 路径、进程启动时间和当时的 page target id；`cdp.js` 的每个写命令在选择 target 前后各自复核，过期、PID/端口复用、target 漂移都退出 2。授权中有多个 page target 时，写操作禁止 `auto`，必须从 `list` 复制准确 target id。`--dry` 只检查，不签发会话。默认会话位于 `%LOCALAPPDATA%\win-use-master\sessions`；测试可用 `WIN_USE_MASTER_CDP_SESSION` 指向隔离路径。
 
 对 Microsoft Store/UWP 的本地化显示名，`open` 优先通过 `Get-StartApps` 的 AUMID 启动；即使窗口已经存在，也不会把通用的 `ApplicationFrameHost.exe` 当成应用本体。显示名匹配多个开始菜单项时拒绝猜测。
 
@@ -127,7 +129,7 @@ CDP 可在窗口被遮挡时读写渲染页面，也能避免抢焦点。但它�
 
 `uiaread` 专门读取 Text/Document/Edit/Status/Header 语义内容，可按名称、值或 AutomationId 过滤；密码控件只返回脱敏标记。所有 UIA 枚举、读取、引用解析与动作都在独立 worker 中执行，6 秒不返回就终止 worker，避免异常 provider 卡死 agent。读操作超时表示本轮不可用；写操作超时必须标成 `effect=unknown`，因为动作可能已发生，禁止自动重试。
 
-`uiaset` 只对支持 `ValuePattern` 的元素生效，Edit 与 Document 都算（记事本 11 的文本区就是 RichEdit Document，`first` 在没有 Edit 时会兜底选它）；`invoke` 会选择元素实际支持的 Invoke/Toggle/Selection/ExpandCollapse pattern。它们通常不借前台，但返回成功仍可能是应用层 no-op。必须继续检查读回、按钮状态或最终副作用。写入正文通过 stdin 传给 worker，不出现在 worker 命令行。
+`uiaset` 只对支持 `ValuePattern` 的元素生效，Edit 与 Document 都算（记事本 11 的文本区就是 RichEdit Document，`first` 在没有 Edit 时会兜底选它）；`invoke` 会先在只读 worker 中按当前语义身份重定位，再按共享风险规则检查 Name、AutomationId 和 ClassName，命中最终动作或控件无标签就会在 before 截图和 pattern 调用前退出 2。通过后，动作 worker 会再次重定位并复核。它们通常不借前台，但返回成功仍可能是应用层 no-op。必须继续检查读回、按钮状态或最终副作用。写入正文通过 stdin 传给 worker，不出现在 worker 命令行。
 
 UIA `eN` 只对当次枚举有意义。窗口重绘后重新 `uia`；或者使用 `see` 保存的 map，通过 `e3@path\to\image.uia.json` 让工具按 AutomationId/名称和位置重新匹配。
 
@@ -186,7 +188,7 @@ Windows `SendInput` 是全局输入流，不携带目标 PID/HWND。工具会短
 
 HUD 默认使用四角 `corner` 样式并尽力排除捕获。可用 `WIN_USE_MASTER_HUD_STYLE=corner|glow|plain` 选择四角、整屏边框或仅标签；`WIN_USE_MASTER_HUD=0` 完全关闭。只有录制 HUD 本身的演示时才设置 `WIN_USE_MASTER_HUD_CAPTURABLE=1`，否则保持默认排除捕获。手动预览也可执行 `win.ps1 hud 1400 "文案" glow`。
 
-`--force` 不是通用“继续”按钮。它不绕过用户在场、遮挡、完整性未知/UIPI、锁屏、UAC、不可逆或外部动作；当前仅用于用户已明确批准某条具体终端/IDE 命令后，解除其 `Enter` 防误触保护。它不代表授权本身。
+`config/risk-actions.json` 是 UIA、CDP 和按键路径共用的版本化规则源。`Enter`、`Ctrl+S`、`Ctrl+Shift+S`、`Alt+F4` 都作为可能提交、保存或关闭的最终动作拒绝；`--force` 仅为旧调用保留解析兼容，不会解除这些规则，也不绕过用户在场、遮挡、完整性未知/UIPI、锁屏或 UAC。最终一步由用户亲自完成。
 
 ## 命令表
 
@@ -225,11 +227,11 @@ win.ps1 clickin <target> <x> <y> [@shot.png] [shot out.png] [--dry]
 win.ps1 hoverin <target> <x> <y> [@shot.png] [holdms] [shot out.png]
 win.ps1 scrollin <target> <x> <y> <delta> [steps] [--horizontal] [@shot.png]
 win.ps1 type <target> <text> [--replace]
-win.ps1 key <target> <Enter|Ctrl+A|Ctrl+Shift+S> [--force]
+win.ps1 key <target> <Ctrl+A|Escape|Tab|...> [--dry]  # Enter/保存/关闭类按键拒绝
 win.ps1 op <target> <x> <y> <text> [@shot.png] [--replace] [shot out.png]
 ```
 
-坐标写命令都支持全局 `--dry`；先用 `--dry`。单次 `type`/`op` 最多 1000 个 UTF-16 字符，`scrollin` 最多 200 步，`hoverin` 最多保持 8 秒，超限会在发送输入前拒绝。`type`/`op --replace` 会先发 `Ctrl+A`。`op` 不提供发送/提交的最终点击；终端/IDE 的 `Enter` 只有在用户明确批准具体命令后才可加 `--force`。
+坐标写命令都支持全局 `--dry`；先用 `--dry`。单次 `type`/`op` 最多 1000 个 UTF-16 字符，`scrollin` 最多 200 步，`hoverin` 最多保持 8 秒，超限会在发送输入前拒绝。`type`/`op --replace` 会先发 `Ctrl+A`。`op` 不提供发送/提交的最终点击；`key` 拒绝 Enter/保存/关闭类按键。`eN@map.uia.json` 能按控件语义执行同一风险检查；纯像素坐标无法可靠知道按钮含义，因此仍必须遵守停手线，不能把“规则未命中”理解为授权。
 
 ### 应用、状态与 CDP
 
@@ -243,16 +245,18 @@ node "$SKILL_DIR/scripts/cdp.js" <port> list
 node "$SKILL_DIR/scripts/cdp.js" <port> snapshot <target> [--all]
 node "$SKILL_DIR/scripts/cdp.js" <port> find <target> <文本> [--role button] [--all]
 node "$SKILL_DIR/scripts/cdp.js" <port> wait <target> <css|text:文本|gone:css> [秒]
+node "$SKILL_DIR/scripts/cdp.js" <port> inspect <target> <选择器>   # 脱敏状态与字符数
 node "$SKILL_DIR/scripts/cdp.js" <port> mouse|insert|press|click|text|act ... [--receipt <path>]
-node "$SKILL_DIR/scripts/cdp.js" <port> press <target> <Enter|Escape|Backspace|SelectAll|Slash|At> [选择器]
-node "$SKILL_DIR/scripts/cdp.js" <port> shot|eval ...
+node "$SKILL_DIR/scripts/cdp.js" <port> press <target> <Escape|Backspace|SelectAll|Slash|At> [选择器] # Enter 拒绝
+node "$SKILL_DIR/scripts/cdp.js" <port> shot|eval-read ...
+node "$SKILL_DIR/scripts/cdp.js" <port> eval-unsafe <target> <表达式> --allow-side-effects [--receipt <path>] # effect 始终为 unknown
 ```
 
 退出码：`0` 成功；`1` 确定失败；`2` 被安全闸拒绝或结果未知。**2 绝不能当成功。**
 
 ## 停手线
 
-认出来就交还用户，不通过坐标、UIA、CDP 或 `--force` 绕（终端/IDE 仅在用户明确批准具体命令后可解除 `Enter` 防误触）：
+认出来就交还用户，不通过坐标、UIA、CDP、`eval-unsafe` 或 `--force` 绕：
 
 - 发布、提交、发送、付款、下单、删除、卸载、清空、覆盖保存，以及代用户“同意”；
 - PowerShell、cmd、Windows Terminal、IDE 的 Enter/运行按钮——等同执行代码；

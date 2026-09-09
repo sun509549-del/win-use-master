@@ -28,6 +28,7 @@ foreach ($file in $scriptFiles) {
 if ($LASTEXITCODE) { throw "build.ps1 exit=$LASTEXITCODE" }
 
 $fixtureProcess = $null
+$ambiguityProcess = $null
 try {
     $hostExe = (Get-Process -Id $PID).Path
     # The fixture itself must be visible for PrintWindow/UIA. Reuse the current
@@ -51,6 +52,30 @@ try {
     $hwnd = $Matches[1]
     Write-Output "fixture: $hwnd pid=$($fixtureProcess.Id)"
 
+    # A fuzzy title/PID selector must never silently pick one of multiple
+    # windows. Start a second owned fixture, prove refusal happens before an
+    # output image is created, then continue all remaining checks by exact HWND.
+    $ambiguityProcess = Start-Process -FilePath $hostExe -ArgumentList @('-NoProfile','-File',"`"$fixture`"") -NoNewWindow -PassThru
+    $ambiguityDeadline = [DateTime]::UtcNow.AddSeconds(12)
+    $ambiguousCandidates = @()
+    do {
+        Start-Sleep -Milliseconds 200
+        $ambiguousCandidates = @(& $win windows 'smoke fixture' --all 2>$null | Where-Object {
+            $_ -match '^id=0x' -and ($_.Contains(" pid=$($fixtureProcess.Id) ") -or $_.Contains(" pid=$($ambiguityProcess.Id) "))
+        })
+    } while ($ambiguousCandidates.Count -lt 2 -and [DateTime]::UtcNow -lt $ambiguityDeadline)
+    if ($ambiguousCandidates.Count -lt 2) { throw '第二个歧义测试窗口 12 秒内没有出现。' }
+    $ambiguousPath = Join-Path $evidence 'must-not-exist-ambiguous.png'
+    $ambiguousOut = @(& $hostExe -NoProfile -File $win shot 'smoke fixture' $ambiguousPath 2>&1)
+    if ($LASTEXITCODE -ne 2 -or (($ambiguousOut -join "`n") -notmatch '匹配 .* 个窗口，不会自动猜测目标') -or
+        (Test-Path -LiteralPath $ambiguousPath)) {
+        throw "模糊窗口选择器没有在任何截图副作用前拒绝：exit=$LASTEXITCODE output=$($ambiguousOut -join ' | ')"
+    }
+    $ambiguityProcess.CloseMainWindow() | Out-Null
+    if (-not $ambiguityProcess.WaitForExit(3000)) { $ambiguityProcess.Kill() }
+    $ambiguityProcess = $null
+    Write-Output 'window-ambiguity: refused before side effect PASS'
+
     $shot = Join-Path $evidence 'shot.png'
     $see = Join-Path $evidence 'see.png'
     & $win shot $hwnd $shot
@@ -70,6 +95,17 @@ try {
     if ($LASTEXITCODE) { throw "clickin --dry exit=$LASTEXITCODE" }
     & $win clickin $hwnd ("e1@" + $see + '.uia.json') 0 --dry
     if ($LASTEXITCODE) { throw "UIA map reference --dry exit=$LASTEXITCODE" }
+    $mapForRisk = Get-Content -LiteralPath ($see + '.uia.json') -Raw | ConvertFrom-Json
+    $dangerSpec = @($mapForRisk.elements | Where-Object { $_.automationId -eq 'sendButton' } | Select-Object -First 1)
+    if (-not $dangerSpec.Count) { throw 'see map 中没有高风险按钮 fixture。' }
+    $dangerClick = @(& $hostExe -NoProfile -File $win clickin $hwnd ("$($dangerSpec[0].ref)@" + $see + '.uia.json') 0 --dry 2>&1)
+    if ($LASTEXITCODE -ne 2 -or (($dangerClick -join "`n") -notmatch '高风险最终动作规则')) {
+        throw "L2 UIA-map 高风险点击没有在 dry/输入前拒绝：exit=$LASTEXITCODE output=$($dangerClick -join ' | ')"
+    }
+    $dangerKey = @(& $hostExe -NoProfile -File $win key $hwnd Enter --force --dry 2>&1)
+    if ($LASTEXITCODE -ne 2 -or (($dangerKey -join "`n") -notmatch '最终动作留给用户.*--force 不绕过')) {
+        throw "L2 Enter 仍可被 --force 绕过：exit=$LASTEXITCODE output=$($dangerKey -join ' | ')"
+    }
     # Stop-Hu writes directly to Console.Error.  Invoke a real child pwsh so
     # both stderr text and the process exit code are observable by the test.
     $oversizeType = @(& $hostExe -NoProfile -File $win type $hwnd ('x' * 1001) --dry 2>&1)
@@ -144,7 +180,7 @@ try {
     $probeReport = @(& $probe 'smoke fixture')
     $probeText = $probeReport -join "`n"
     if ($LASTEXITCODE -or ($probeText -notmatch "(?m)^相关 PID: $($fixtureProcess.Id)$") -or
-        ($probeText -notmatch 'editable=1') -or ($probeText -notmatch 'actionable=1')) {
+        ($probeText -notmatch 'editable=1') -or ($probeText -notmatch 'actionable=2')) {
         throw '动态 probe 没有严格限定 fixture PID，或 UIA 统计异常。'
     }
     if ($probeText -notmatch 'COM 自动化对象模型') {
@@ -175,20 +211,29 @@ try {
     }
     Write-Output 'action-receipt: L1 chain PASS'
 
-    $button = $uia | Where-Object { $_ -match '^(e\d+) Button ' } | Select-Object -First 1
-    if ($button -and $button -match '^(e\d+)') {
-        $invokeOutput = @(& $win invoke $hwnd $Matches[1] ("@" + $see + '.uia.json'))
-        $invokeOutput | Write-Output
-        if ($LASTEXITCODE) { throw "invoke exit=$LASTEXITCODE" }
-        foreach ($line in $invokeOutput) {
-            if ($line -match '^verification: (.+) receipt=(.+)$') { [void]$transientEvidence.Add($Matches[1]); [void]$transientEvidence.Add($Matches[2]) }
-        }
-        $statusRead = @(& $win uiaread $hwnd 'fixtureStatus')
-        if ($LASTEXITCODE -or (($statusRead -join "`n") -notmatch 'status: semantic-smoke')) {
-            throw 'InvokePattern 后 uiaread 没有读回 fixture 状态。'
-        }
-        Write-Output 'uiaread: action side-effect PASS'
+    $dangerInvoke = @(& $hostExe -NoProfile -File $win invoke $hwnd $dangerSpec[0].ref ("@" + $see + '.uia.json') 2>&1)
+    if ($LASTEXITCODE -ne 2 -or (($dangerInvoke -join "`n") -notmatch '高风险最终动作规则')) {
+        throw "L1 UIA 高风险 invoke 没有在动作前拒绝：exit=$LASTEXITCODE output=$($dangerInvoke -join ' | ')"
     }
+    $dangerStatus = @(& $win uiaread $hwnd 'fixtureStatus')
+    if ($LASTEXITCODE -or (($dangerStatus -join "`n") -match 'DANGER-RAN')) {
+        throw '被拒绝的 UIA invoke 仍改变了 fixture 状态。'
+    }
+    Write-Output 'risk-policy: L1 invoke/L2 mapped-click/key refused with zero app side effect PASS'
+
+    $safeButton = @($mapForRisk.elements | Where-Object { $_.name -eq 'Apply fixture value' } | Select-Object -First 1)
+    if (-not $safeButton.Count) { throw 'see map 中没有安全按钮 fixture。' }
+    $invokeOutput = @(& $win invoke $hwnd $safeButton[0].ref ("@" + $see + '.uia.json'))
+    $invokeOutput | Write-Output
+    if ($LASTEXITCODE) { throw "invoke exit=$LASTEXITCODE" }
+    foreach ($line in $invokeOutput) {
+        if ($line -match '^verification: (.+) receipt=(.+)$') { [void]$transientEvidence.Add($Matches[1]); [void]$transientEvidence.Add($Matches[2]) }
+    }
+    $statusRead = @(& $win uiaread $hwnd 'fixtureStatus')
+    if ($LASTEXITCODE -or (($statusRead -join "`n") -notmatch 'status: semantic-smoke')) {
+        throw 'InvokePattern 后 uiaread 没有读回 fixture 状态。'
+    }
+    Write-Output 'uiaread: action side-effect PASS'
     $oldHud = $env:WIN_USE_MASTER_HUD
     $oldHudStyle = $env:WIN_USE_MASTER_HUD_STYLE
     $oldHudCapturable = $env:WIN_USE_MASTER_HUD_CAPTURABLE
@@ -228,16 +273,25 @@ try {
     }
     Write-Output 'screen: window/region/mutex PASS'
 
-    # Explicit window-state commands: minimize then restore the fixture without
-    # activating it; the foreground must be unchanged and shot must work again.
+    # Explicit window-state commands: minimize then restore without activating.
+    # If the fixture starts in the foreground, Windows must choose another
+    # foreground window when it is minimized; in that case restore must preserve
+    # the replacement rather than pulling the fixture back to the foreground.
     $fgBefore = [HuWin]::ForegroundWindow().ToInt64()
     $minOut = @(& $win minimize $hwnd)
     if ($LASTEXITCODE -or (($minOut -join "`n") -notmatch 'after:  id=.* state=min ')) { throw "minimize 失败：$($minOut -join ' ')" }
+    Start-Sleep -Milliseconds 150
+    $fgAfterMinimize = [HuWin]::ForegroundWindow().ToInt64()
+    if ($fgBefore -ne ([Convert]::ToInt64($hwnd.Substring(2), 16)) -and $fgAfterMinimize -ne $fgBefore) {
+        throw 'minimize 后台窗口时改变了用户前台窗口。'
+    }
     $minShot = @(& $hostExe -NoProfile -File $win shot $hwnd (Join-Path $evidence 'minimized.png') 2>&1)
     if ($LASTEXITCODE -ne 2) { throw "最小化窗口的 shot 应退出 2，得到 $LASTEXITCODE：$($minShot -join ' ')" }
     $restoreOut = @(& $win restore $hwnd)
     if ($LASTEXITCODE -or (($restoreOut -join "`n") -notmatch 'after:  id=.* state=current ')) { throw "restore 失败：$($restoreOut -join ' ')" }
-    if ([HuWin]::ForegroundWindow().ToInt64() -ne $fgBefore) { throw 'restore/minimize 改变了前台窗口。' }
+    # The user/desktop may legitimately change foreground while this test runs;
+    # the invariant owned by restore is only that it must not activate the target.
+    if ([HuWin]::ForegroundWindow().ToInt64() -eq ([Convert]::ToInt64($hwnd.Substring(2), 16))) { throw 'restore 重新激活了被测窗口。' }
     & $win shot $hwnd (Join-Path $evidence 'restored.png') | Out-Null
     if ($LASTEXITCODE) { throw "restore 后 shot exit=$LASTEXITCODE" }
     Write-Output 'window-state: minimize/restore no-activate PASS'
@@ -273,6 +327,10 @@ try {
     $evidenceLabel = if ($KeepEvidence) { $evidence } else { 'temporary(auto-cleaned)' }
     Write-Output "PASS: build/windows/probe/shot/see/screen/uia/uiaread/uiaset/invoke/dry-gates/bounded-focus/hud/window-state/open-bg coordinate=$coordinateState evidence=$evidenceLabel"
 } finally {
+    if ($ambiguityProcess -and -not $ambiguityProcess.HasExited) {
+        $ambiguityProcess.CloseMainWindow() | Out-Null
+        if (-not $ambiguityProcess.WaitForExit(3000)) { $ambiguityProcess.Kill() }
+    }
     if ($fixtureProcess -and -not $fixtureProcess.HasExited) {
         $fixtureProcess.CloseMainWindow() | Out-Null
         if (-not $fixtureProcess.WaitForExit(3000)) { $fixtureProcess.Kill() }

@@ -9,6 +9,14 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 }
 
 const server = http.createServer((request, response) => {
+  if (request.url === '/json/list') {
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify([{
+      id: 'fixture-page', type: 'page', title: 'win-use-master owner fixture',
+      url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/fixture-page`,
+    }]));
+    return;
+  }
   if (request.url !== '/json/version') {
     response.writeHead(404).end();
     return;

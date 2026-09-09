@@ -1,0 +1,24 @@
+{
+  "schema": "win-use-master/risk-actions-v1",
+  "blockedTextPatterns": [
+    {
+      "id": "zh-final-action",
+      "pattern": "删除|清空|发布|提交|发送|支付|付款|购买|下单|卸载|安装|授权|同意|保存|覆盖|转账|汇款|确认支付|永久删除",
+      "flags": "i"
+    },
+    {
+      "id": "en-final-action",
+      "pattern": "\\b(delete|remove|publish|submit|send|post|pay|buy|purchase|uninstall|install|authorize|agree|save|overwrite|transfer)\\b",
+      "flags": "i"
+    }
+  ],
+  "blockedKeyChords": [
+    "Enter",
+    "Ctrl+S",
+    "Ctrl+Shift+S",
+    "Alt+F4"
+  ],
+  "blockedDomSemantics": [
+    "form-submit"
+  ]
+}

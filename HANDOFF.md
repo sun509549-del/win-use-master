@@ -39,6 +39,7 @@
 | `scripts/probe.ps1` | 只读应用发现：Win32/AppX、版本、架构、runtime、端口、协议、COM、窗口、UIA、完整性 |
 | `scripts/cdp.js` | CDP target、DOM ref、动作、截图、差分、脱敏收据和截止时间 |
 | `config/risk-actions.json` | 跨 UIA/CDP/L2 的版本化最终动作文本、按键与 DOM 语义拒绝规则 |
+| `assets/architecture.svg` | README 使用的仓库原生架构图；无脚本、无远程资源，含 title/desc |
 | `references/控制面详解.md` | 四层原理和选择依据 |
 | `references/权限与故障.md` | UIPI、锁屏、虚拟桌面、截图/UIA/CDP/HUD 故障处理 |
 | `references/取证规范.md` | before/action/after、哈希、隐私、归档和跑批 |
@@ -112,6 +113,7 @@
 
 ```powershell
 pwsh -NoProfile -File scripts/build.ps1
+pwsh -NoProfile -File tests/static-contract.ps1
 pwsh -NoProfile -File tests/cdp-ownership.ps1
 pwsh -NoProfile -File tests/cdp-action-receipt.ps1
 ```
@@ -146,13 +148,13 @@ pwsh -NoProfile -File tests/wps-et-com-profile.ps1
 
 前两者发现目标原本已打开时会拒绝运行；不要关闭用户已有实例。计算器测试执行 `1+2=3`、恢复 0 并关闭。记事本测试还会拒绝向恢复出的会话写入（多标签、已修改或非空文档），写入后清空再关闭；记事本 11 关闭已修改标签不弹提示而是留到下次会话，因此失败路径同样先清空。WorkBuddy 测试相反：它从不启动、重启或关闭 app，只接受用户已授权并带 `--cdp` 启动的实例；无实例、端口归属不明或输入区有草稿时退出 2。它不按 Enter、不点发送、不碰「重启升级」。
 
-云 CI 只运行解析、构建、CDP owner 和无头 Edge 收据/超时测试。GitHub runner 没有可信的用户交互桌面，因此不得把 L2、截图/UIA fixture 或计算器测试塞进 CI 后宣称通过。
+云 CI 运行解析、发布静态契约、构建、CDP owner 和无头 Edge 收据/超时测试。静态契约守住必需发布文件、风险规则正反例、架构 SVG、README 相对链接、兼容入口和 `SKILL.md ≤ 6000` 字符。GitHub runner 没有可信的用户交互桌面，因此不得把 L2、截图/UIA fixture 或计算器测试塞进 CI 后宣称通过。
 
 ## 7. 发布流程
 
 1. 确认 `git status --short` 只含本轮预期文件。
 2. 扫描真实密钥、本机绝对路径、账号和测试残留。
-3. 运行上面的本地测试；生成的 DLL 和 `.last-update-check` 应保持 ignored。
+3. 运行上面的本地测试；`static-contract.ps1` 必须通过，生成的 DLL 和 `.last-update-check` 应保持 ignored。
 4. 使用描述性提交信息推送 `main`。
 5. 等待 `.github/workflows/ci.yml` 完成；远端 SHA 必须与本地一致。
 6. 更新 `references/与mac版差距.md`：已编码消除的缺口移入“已经对齐”。
@@ -163,10 +165,10 @@ pwsh -NoProfile -File tests/wps-et-com-profile.ps1
 
 1. P1：剪映 CEF 是否接受 `--remote-debugging-port`、「版本更新」弹窗可见态截图；都需要用户授权重启或显示，不得自行 ShowWindow。
 2. P1：QQ 聊天输入框的 UIA/CDP 写路径未测（停手线附近，需用户指定一个可逆目标）。
-3. P1：制作经脱敏的真实 Windows 案例和架构图。
+3. P1：制作经脱敏的真实 Windows 案例；架构图已完成并由静态契约守护。
 4. P2：微信是 Qt5 空树 + 无 CDP 的典型，L2 写路径（需用户指定可逆目标）能补上“只有坐标可走”的第一个真实样本。
 5. P2：Blender 安装后按 Mac 的 bpy 路线补 L0 CLI 创作型案例。
-4. P2：把本项目特有、可复现且不能编码消除的失败过程整理进 `踩坑实录.md`；不要复制 Mac 结论凑文档。
+6. P2：把本项目特有、可复现且不能编码消除的失败过程整理进 `踩坑实录.md`；不要复制 Mac 结论凑文档。
 
 ## 9. 常见误判
 

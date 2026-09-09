@@ -19,6 +19,8 @@
 
 ---
 
+![win-use-master 分层控制、安全边界与证据闭环架构图](assets/architecture.svg)
+
 ## 它解决什么问题
 
 有些工作只能在桌面客户端里完成：读取一个原生窗口、填写自绘输入区、操作内嵌 WebView、为 bug 留窗口截图，或验证“工具返回成功”以后 app 是否真的改变。
@@ -66,7 +68,7 @@ pwsh -NoProfile -File "$SKILL_DIR\scripts\build.ps1"
 
 Skill 每 30 天至多静默检查一次 git `origin` 是否有新版本；检查失败不影响当前任务，也不会自动 pull。发现落后只在任务结束后提示，由用户决定是否更新。非 git 安装只刷新本地检查日期。
 
-公开仓库的 Windows CI 会在干净 runner 上执行 PowerShell/JavaScript 解析、C# helper 构建、CDP 端口归属防串线，以及无头 Edge 动作收据、脱敏与超时回归。需要活动交互桌面的 `smoke.ps1`、截图 sibling 和真实计算器测试只在本机运行，云 CI 不伪造这些结论。
+公开仓库的 Windows CI 会在干净 runner 上执行发布契约检查、PowerShell/JavaScript 解析、C# helper 构建、CDP 端口归属防串线，以及无头 Edge 动作收据、脱敏与超时回归。发布契约会守住必需文件、风险规则正反例、README 相对链接、SVG 安全性、兼容入口和 SKILL 体积。需要活动交互桌面的 `smoke.ps1`、截图 sibling 和真实计算器测试只在本机运行，云 CI 不伪造这些结论。
 
 ### 第一次探测
 
@@ -289,6 +291,10 @@ win-use-master/
 ├── README.md
 ├── HANDOFF.md            # 维护交接、测试矩阵、发布流程与当前待办
 ├── cdp.js                # 兼容旧入口，转发到 scripts/cdp.js
+├── assets/
+│   └── architecture.svg  # 分层控制、安全边界与证据闭环架构图
+├── config/
+│   └── risk-actions.json # UIA/CDP/L2 共用的最终动作拒绝规则
 ├── scripts/
 │   ├── HuWin.cs          # Win32 / DWM / SendInput / 截图 / 安全判据
 │   ├── HuWin.dll         # build.ps1 生成，可删除后重编译
@@ -301,6 +307,7 @@ win-use-master/
 │   ├── cdp-ownership.ps1 # 验证端口 owner 错配拒绝/正确接受
 │   ├── cdp-fixture.js    # CDP 端口归属拒绝测试的本地 HTTP fixture
 │   ├── cdp-action-receipt.ps1 # 临时无头 Edge 上的 CDP 动作/脱敏/失败/超时收据回归
+│   ├── static-contract.ps1 # 发布文件、规则、链接、SVG 与 Skill 体积契约
 │   ├── sibling-fixture.ps1 # 同进程壳窗口/渲染窗口 fixture
 │   ├── capture-recovery.ps1 # 截图 sibling recovery 与收据回归
 │   ├── uia-timeout.ps1   # UIA worker 挂起、终止与 unknown 收据回归
@@ -330,6 +337,7 @@ win-use-master/
 pwsh -NoProfile -File "$SKILL_DIR\tests\smoke.ps1"
 # 发布级回归：要求 L2 实际输入；运行期间不要操作键鼠
 pwsh -NoProfile -File "$SKILL_DIR\tests\smoke.ps1" -RequireCoordinate
+pwsh -NoProfile -File "$SKILL_DIR\tests\static-contract.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\cdp-ownership.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\cdp-action-receipt.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\capture-recovery.ps1"

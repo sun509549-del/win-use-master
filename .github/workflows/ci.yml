@@ -57,6 +57,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed with exit $LASTEXITCODE" }
           if (-not (Test-Path -LiteralPath scripts/HuWin.dll -PathType Leaf)) { throw 'HuWin.dll was not generated.' }
 
+      - name: Verify published artifact contract
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/static-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "static-contract.ps1 failed with exit $LASTEXITCODE" }
+
       - name: Verify CDP port ownership guard
         shell: pwsh
         run: |
@@ -78,4 +84,3 @@ jobs:
             $unexpected | Write-Output
             throw 'Tests left tracked or unignored artifacts in the worktree.'
           }
-

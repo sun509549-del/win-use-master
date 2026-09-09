@@ -1,6 +1,6 @@
 # 与 huashu-mac-use 的功能差距
 
-> 基线：上游 [huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use) 的 README/SKILL 所表达的设计，以及用户提供的[相关文章](https://mp.weixin.qq.com/s/pgvLMG7pg_1lpPLMN8zbhg)。本表记录 Windows 版本的工程差距，不把操作系统做不到的能力伪装成待实现功能。更新日期：2026-09-08。
+> 基线：上游 [huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use) 的 README/SKILL 所表达的设计，以及用户提供的[相关文章](https://mp.weixin.qq.com/s/pgvLMG7pg_1lpPLMN8zbhg)。本表记录 Windows 版本的工程差距，不把操作系统做不到的能力伪装成待实现功能。更新日期：2026-09-09。
 
 ## 已经对齐
 
@@ -33,6 +33,7 @@
 | COM 作为 L0 的真实写路径 | Excel/WPS 两个私有实例档案：身份核对、Visible 时机、RCW 释放、不经宿主验证文件；`win.ps1 com <ProgID>` 做注册视图与身份核对（Mac 对应 `sdef`） |
 | 窗口列表可读 | `windows --all` 折叠 Qt/CEF 的几百个无标题消息窗，`--raw` 才全列 |
 | app 经验回流与版本自检 | `app档案.md`、30 天静默版本检查 |
+| 架构可视化与发布契约 | README 内嵌仓库原生 SVG；CI 检查必需文件、风险规则、文档链接、SVG 安全性、兼容入口与 Skill 体积 |
 
 ## 仍缺少或样本不足
 
@@ -40,7 +41,7 @@
 |---|---|---|
 | P1 | 真实 app 档案广度 | 完整可重放档案五个：计算器（Invoke）、记事本（Document ValuePattern）、WorkBuddy（CDP 零焦点写/撤回）、Excel（COM 私有实例写表另存并不经 Excel 验证）、WPS 表格（KET.Application 同任务 + 二次打开）。只读档案：QQ（UIA 可读）、微信（Qt5 UIA 空树）、剪映（UIA 挂死），三者 PrintWindow 都完整、都无 CDP。Mac 11 个 app；Windows 8 个，Blender、系统设置类样本仍缺，微信/QQ 的写路径未测。 |
 | P1 | 跨 app 共性结论 | 已有 8 条（`app档案.md` 四·五节，8 个 app），每条 ≥2 个实现复现；比 Mac 的 9 条少一轮证伪周期。 |
-| P1 | 面向用户的真实案例与视觉素材不足 | Mac 版有 Blender/桌面客户端案例、GIF 和架构图；Windows 版目前重工程验证、轻展示。需要经脱敏的 Windows 原生/UIA/CDP 案例与架构图，但不能拿测试 fixture 冒充生产案例。 |
+| P1 | 面向用户的真实案例素材不足 | 分层控制、安全边界与证据闭环架构图已经补齐；仍缺经脱敏的 Windows 原生/UIA/CDP 真实案例或 GIF，且不能拿测试 fixture 冒充生产案例。 |
 | P1 | 单 app 经验的广度不足 | Mac 档案覆盖多个 Electron 和原生 app；Windows 需要随真实任务渐进积累，不能凭框架名称推断 UIA/CDP/截图一定可用。 |
 | P2 | 翻车过程文档 | `references/踩坑实录.md` 已起稿：21 条现象→归因→落点→证据，另有“哪些 Mac 结论在 Windows 上不成立”一节。比 Mac 的 519 行薄，但每条都对应今天的代码改动或档案条目。 |
 
@@ -54,4 +55,4 @@ Mac 版可以先尝试向指定 PID 投递合成事件，失败后再借焦点�
 
 1. 剪映 CEF `--remote-debugging-port` 与更新弹窗（需用户授权重启/显示）作为第二个 Chromium 实现。
 2. 微信、系统设置、Blender 等补样本；QQ 输入框写路径需用户指定可逆目标。
-3. 案例素材与 `踩坑实录.md`。
+3. 经脱敏的真实案例素材与 `踩坑实录.md`。

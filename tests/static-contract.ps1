@@ -71,7 +71,7 @@ foreach ($match in $relativeLinks) {
 }
 
 $ignore = Get-Content -LiteralPath (Join-Path $root '.gitignore') -Raw -Encoding utf8
-Assert-Contract ($ignore -match '(?m)^scripts/HuWin\.dll$') '.gitignore 未排除生成的 HuWin.dll'
-Assert-Contract ($ignore -match '(?m)^\.last-update-check$') '.gitignore 未排除本地版本检查状态'
+Assert-Contract ($ignore -match '(?m)^scripts/HuWin\.dll\r?$') '.gitignore 未排除生成的 HuWin.dll'
+Assert-Contract ($ignore -match '(?m)^\.last-update-check\r?$') '.gitignore 未排除本地版本检查状态'
 
 Write-Output "PASS: static publish contract files/risk-policy/svg/README-links/SKILL-size=$($skill.Length)"

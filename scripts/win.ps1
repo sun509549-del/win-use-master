@@ -173,7 +173,8 @@ function Invoke-UiaWorker {
         [string] $Reference,
         $Spec = $null,
         [string] $Text,
-        [int] $Limit = 300
+        [int] $Limit = 300,
+        [string] $ExactId = ''
     )
     $worker = Join-Path $PSScriptRoot 'uia-worker.ps1'
     if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) { Stop-Hu "找不到 UIA worker: $worker" }
@@ -184,6 +185,7 @@ function Invoke-UiaWorker {
     if ($Reference) { $request['reference'] = $Reference }
     if ($null -ne $Spec) { $request['spec'] = $Spec }
     if ($Mode -eq 'set') { $request['text'] = $Text }
+    if ($ExactId) { $request['exactId'] = $ExactId }
 
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = (Get-Process -Id $PID).Path
@@ -251,6 +253,16 @@ function Test-JunkWindow($Window) {
 }
 
 function Format-Hwnd([long] $Hwnd) { return ('0x{0:X}' -f $Hwnd) }
+
+function Get-HuForegroundTransition([long] $Before, [long] $After, [long] $Target) {
+    if ($After -eq $Before) {
+        if ($After -eq $Target) { return 'target-already' }
+        return 'unchanged'
+    }
+    if ($After -eq $Target) { return 'unexpected-target' }
+    if ($Before -eq $Target) { return 'released-by-windows' }
+    return 'changed-external'
+}
 
 function Format-Window($Window) {
     # Hidden windows (tray state, not-yet-shown editors, background dialogs) are
@@ -492,7 +504,7 @@ function Invoke-BackgroundShot($Window, [string] $Path, [switch] $NoReceipt, [sw
 # Pixels cannot tell an empty document from a shell whose client area never
 # rendered: both are a uniform interior under a rendered frame. Report which shape
 # was seen and point at semantic cross-checks instead of implying a capture fault.
-function Get-BlankFrameHint($Result, $Window, $Elements = $null) {
+function Get-BlankFrameHint($Result, $Window, $Elements = $null, [switch] $Summary) {
     $cdpRoute = if ($null -ne $Result.CdpPort) { "已发现目标 CDP 端口 $($Result.CdpPort)：node `"$PSScriptRoot\cdp.js`" $($Result.CdpPort) shot auto <路径>。" } else { '' }
     $frame = $Result.FrameColors
     if ($null -ne $Window -and -not $Window.Visible -and -not $Window.Iconic) {
@@ -507,7 +519,10 @@ function Get-BlankFrameHint($Result, $Window, $Elements = $null) {
         $filled = @($texts | Where-Object { -not [string]::IsNullOrEmpty([string]$_.Value) })
         $empty = @($texts | Where-Object { [string]::IsNullOrEmpty([string]$_.Value) })
         if ($filled.Count) { $semantic = " UIA 却读到 $($filled.Count) 个非空 Document/Edit：像素与语义不一致，内容层可能未渲染，用 screen --window 交叉验证。" }
-        elseif ($empty.Count) { $semantic = " UIA 读到空的 $($empty[0].ControlType)「$($empty[0].Name)」，与单色内容区一致：多半是空文档，不是截图失败。" }
+        elseif ($empty.Count) {
+            $identity = if ($Summary) { [string]$empty[0].ControlType } else { "$($empty[0].ControlType)「$($empty[0].Name)」" }
+            $semantic = " UIA 读到空的 $identity，与单色内容区一致：多半是空文档，不是截图失败。"
+        }
     }
     return "⚠️ 内容区接近单色但窗口框/工具栏已渲染（内容区 $($Result.Colors) 桶，整帧 $frame 桶）：可能是空白文档/画布，也可能是壳窗口或内容层未渲染。${semantic}${cdpRoute}$(if (-not $semantic) { ' 先 uiaread 看 Document/Edit 是否为空，或 screen --window 交叉验证；都判断不了再 shotfg。' })"
 }
@@ -750,13 +765,39 @@ function Get-UiaElements($Window, [int] $Limit = 180) {
     return @($reply.Result.items)
 }
 
-function Get-UiaReadableElements($Window, [int] $Limit = 300) {
-    $reply = Invoke-UiaWorker $Window -Mode read -Limit $Limit
+function Get-UiaReadableElements($Window, [int] $Limit = 300, [string] $ExactId = '') {
+    $reply = Invoke-UiaWorker $Window -Mode read -Limit $Limit -ExactId $ExactId
     if ($reply.TimedOut) { Stop-Hu 'UIA 读取超过 6 秒，已终止辅助进程；改用截图/CDP。' 2 }
     if ($reply.ExitCode -ne 0 -or $null -eq $reply.Result -or -not $reply.Result.ok) {
         Stop-Hu ("UIA 读取失败: " + $(if ($reply.Error) { $reply.Error } else { 'worker 无结果' })) $(if($reply.ExitCode -eq 2){2}else{1})
     }
     return @($reply.Result.items)
+}
+
+function Get-UiaReadOptions([string[]] $Arguments) {
+    $positionals = [Collections.Generic.List[string]]::new()
+    $exactId = ''; $summary = $false
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        $token = $Arguments[$i]
+        if ($token -eq '--summary') { $summary = $true; continue }
+        if ($token -eq '--id') {
+            if ($exactId -or $i + 1 -ge $Arguments.Count -or
+                [string]::IsNullOrWhiteSpace($Arguments[$i + 1]) -or $Arguments[$i + 1].StartsWith('--')) {
+                Stop-Hu 'uiaread --id 需要一个非空 AutomationId，且只能指定一次。' 2
+            }
+            $i++; $exactId = $Arguments[$i]; continue
+        }
+        if ($token.StartsWith('--')) { Stop-Hu 'uiaread 只支持 --id 与 --summary；未知选项已拒绝。' 2 }
+        $positionals.Add($token)
+    }
+    if ($positionals.Count -lt 1 -or $positionals.Count -gt 2 -or
+        ($exactId -and $positionals.Count -gt 1)) {
+        Stop-Hu '用法: uiaread <target> [过滤词 | --id AutomationId] [--summary]；精确 ID 与模糊过滤不能混用。' 2
+    }
+    return [pscustomobject]@{
+        Target = $positionals[0]; ExactId = $exactId; Summary = $summary
+        Filter = $(if ($positionals.Count -gt 1) { $positionals[1] } else { '' })
+    }
 }
 
 function Get-UiaReferenceSpec([string] $Reference, [string] $MapPath) {
@@ -961,12 +1002,12 @@ win-use-master — Windows 原生 app 的分层操控与可复现取证
 
 读取（不抢焦点）:
   win.ps1 windows [关键词] [--all] [--raw]     # --all 含隐藏/最小化；--raw 连无标题消息窗也列
-  win.ps1 see <hwnd|pid|owner> [path]          # 也接受 --out path，但 pwsh -File 下只能用位置参数
+  win.ps1 see <hwnd|pid|owner> [path] [--summary] # summary 不在终端展开 UIA 名称；也接受 --out path（仅进程内）
   win.ps1 shot <hwnd|owner> <path>
   win.ps1 shotfg <hwnd|owner> <path>          # 后台空图才短暂借焦点
   win.ps1 screen <path> [--window <target>] [--region x y w h]   # 桌面合成截图，交叉验证 PrintWindow
-  win.ps1 uia <hwnd|pid|owner>
-  win.ps1 uiaread <hwnd|pid|owner> [名称或 AutomationId 过滤]
+  win.ps1 uia <hwnd|pid|owner> [--summary]       # summary 只打印类型统计
+  win.ps1 uiaread <hwnd|pid|owner> [过滤词 | --id AutomationId] [--summary] # id 精确且唯一
   win.ps1 idle | frontmost
   win.ps1 restore | minimize <hwnd|pid|owner>   # 用户要求时还原/最小化窗口，不激活；隐藏窗口拒绝
 
@@ -1065,15 +1106,17 @@ switch ($Command.ToLowerInvariant()) {
     }
 
     'see' {
-        if (-not $CommandArgs.Count) { Stop-Hu '用法: win.ps1 see <hwnd|pid|owner> [路径 | --out 路径]' }
-        $w = Resolve-HuWindow $CommandArgs[0]
+        $summaryOnly = $CommandArgs -contains '--summary'
+        $seeArgs = @($CommandArgs | Where-Object { $_ -ne '--summary' })
+        if (-not $seeArgs.Count) { Stop-Hu '用法: win.ps1 see <hwnd|pid|owner> [路径 | --out 路径] [--summary]' }
+        $w = Resolve-HuWindow $seeArgs[0]
         # Positional path is the portable form. `--out` only works for in-process
         # `& win.ps1` calls: under `pwsh -File` the host binds `--out` as the
         # ambiguous common parameter prefix -Out(Variable|Buffer) before the
         # script runs, so it cannot be repaired here.
-        $outIndex = [Array]::IndexOf($CommandArgs, '--out')
-        $out = if ($outIndex -ge 0 -and $outIndex + 1 -lt $CommandArgs.Count) { Get-AbsolutePath $CommandArgs[$outIndex + 1] }
-               elseif ($CommandArgs.Count -ge 2 -and -not $CommandArgs[1].StartsWith('--')) { Get-AbsolutePath $CommandArgs[1] }
+        $outIndex = [Array]::IndexOf($seeArgs, '--out')
+        $out = if ($outIndex -ge 0 -and $outIndex + 1 -lt $seeArgs.Count) { Get-AbsolutePath $seeArgs[$outIndex + 1] }
+               elseif ($seeArgs.Count -ge 2 -and -not $seeArgs[1].StartsWith('--')) { Get-AbsolutePath $seeArgs[1] }
                else { New-TempPng "see-$($w.Pid)" }
         $raw = New-TempPng "see-raw-$($w.Pid)"
         try {
@@ -1093,9 +1136,15 @@ switch ($Command.ToLowerInvariant()) {
             $mapPath = $out + '.uia.json'
             Save-UiaMap $w $elements $mapPath $out
             Write-Output "截图: $out ${ow}x${oh}px（图上坐标可直接配 @$out 使用）"
-            Write-Output "窗口: $(Format-Window $w) receipt=$sidecar"
-            if ($shot.Colors -lt 6) { Write-Output (Get-BlankFrameHint $shot $w $elements) }
+            if ($summaryOnly) {
+                Write-Output "窗口: id=$(Format-Hwnd $w.Hwnd) pid=$($w.Pid) mode=summary receipt=$sidecar"
+            } else { Write-Output "窗口: $(Format-Window $w) receipt=$sidecar" }
+            if ($shot.Colors -lt 6) { Write-Output (Get-BlankFrameHint $shot $w $elements -Summary:$summaryOnly) }
             if (-not $elements.Count) { Write-Output 'UIA 元素表: 无。可能 app 不暴露、窗口在其它虚拟桌面，或 Chromium 树断开；改 CDP/坐标。' }
+            elseif ($summaryOnly) {
+                $types = @($elements | Group-Object ControlType | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', '
+                Write-Output "UIA 元素表 $($elements.Count) 个，map=$mapPath；--summary 已省略名称/值（类型: $types）。map 与截图仍可能敏感，用后清理。"
+            }
             else {
                 Write-Output "UIA 元素表 $($elements.Count) 个，map=$mapPath（引用示例: $($elements[0].Ref)@$mapPath）："
                 $elements | ForEach-Object { Write-Output ('  ' + (Format-UiaElement $_)) }
@@ -1107,23 +1156,31 @@ switch ($Command.ToLowerInvariant()) {
     }
 
     'uia' {
-        if (-not $CommandArgs.Count) { Stop-Hu '用法: win.ps1 uia <hwnd|pid|owner>' }
-        $w = Resolve-HuWindow $CommandArgs[0]
+        $summaryOnly = $CommandArgs -contains '--summary'
+        $uiaArgs = @($CommandArgs | Where-Object { $_ -ne '--summary' })
+        if (-not $uiaArgs.Count) { Stop-Hu '用法: win.ps1 uia <hwnd|pid|owner> [--summary]' }
+        $w = Resolve-HuWindow $uiaArgs[0]
         $first = @(Get-UiaElements $w)
         Start-Sleep -Milliseconds 250
         $elements = @(Get-UiaElements $w)
-        Write-Output "UIA window=$(Format-Hwnd $w.Hwnd) pid=$($w.Pid) elements=$($elements.Count) first-pass=$($first.Count)"
-        $elements | ForEach-Object { Write-Output (Format-UiaElement $_) }
+        Write-Output "UIA window=$(Format-Hwnd $w.Hwnd) pid=$($w.Pid) elements=$($elements.Count) first-pass=$($first.Count)$(if($summaryOnly){' mode=summary'})"
+        if ($summaryOnly -and $elements.Count) {
+            $types = @($elements | Group-Object ControlType | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', '
+            Write-Output "UIA --summary 已省略名称/值（类型: $types）。"
+        } elseif (-not $summaryOnly) {
+            $elements | ForEach-Object { Write-Output (Format-UiaElement $_) }
+        }
         if (-not $elements.Count) { Write-Output '→ L1 暂不可用：Chromium 系走 CDP，其它走 L2 坐标。' }
         else { Write-Output '→ L1 有希望，但 SetValue/Invoke 返回成功仍须截图或副作用验证。' }
         break
     }
 
     'uiaread' {
-        if (-not $CommandArgs.Count) { Stop-Hu '用法: win.ps1 uiaread <hwnd|pid|owner> [名称或 AutomationId 过滤]' }
-        $w = Resolve-HuWindow $CommandArgs[0]
-        $filter = if ($CommandArgs.Count -gt 1) { [string]$CommandArgs[1] } else { '' }
-        $elements = @(Get-UiaReadableElements $w)
+        $options = Get-UiaReadOptions $CommandArgs
+        $summaryOnly = $options.Summary
+        $w = Resolve-HuWindow $options.Target
+        $filter = $options.Filter
+        $elements = @(Get-UiaReadableElements $w -ExactId $options.ExactId)
         if ($filter) {
             $elements = @($elements | Where-Object {
                 $_.Name.IndexOf($filter, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
@@ -1131,8 +1188,15 @@ switch ($Command.ToLowerInvariant()) {
                 $_.Value.IndexOf($filter, [StringComparison]::OrdinalIgnoreCase) -ge 0
             })
         }
-        Write-Output "UIA read window=$(Format-Hwnd $w.Hwnd) pid=$($w.Pid) elements=$($elements.Count) filter=$(if($filter){'"'+$filter+'"'}else{'<none>'})"
-        $elements | ForEach-Object { Write-Output (Format-UiaReadableElement $_) }
+        $shownFilter = if ($summaryOnly -and $filter) { '<set>' } elseif ($filter) { '"' + $filter + '"' } else { '<none>' }
+        if ($options.ExactId) { $shownFilter = '<exact-id>' }
+        Write-Output "UIA read window=$(Format-Hwnd $w.Hwnd) pid=$($w.Pid) elements=$($elements.Count) filter=$shownFilter$(if($summaryOnly){' mode=summary'})"
+        if ($summaryOnly -and $elements.Count) {
+            $types = @($elements | Group-Object ControlType | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', '
+            Write-Output "UIA read --summary 已省略名称/值（类型: $types，password=$(@($elements | Where-Object IsPassword).Count)）。"
+        } elseif (-not $summaryOnly) {
+            $elements | ForEach-Object { Write-Output (Format-UiaReadableElement $_) }
+        }
         if (-not $elements.Count) { Write-Output '→ 没有读到匹配的 Text/Document/Edit/Status/Header；改用截图或 app 自有接口。' }
         break
     }
@@ -1581,13 +1645,19 @@ switch ($Command.ToLowerInvariant()) {
         $wanted = ($Command -eq 'minimize')
         if ($script:Dry) { Write-Output "dry: $Command $(Format-Hwnd $w.Hwnd) currently=$(if ($w.Iconic) { 'min' } else { 'current' }) -> $(if ($wanted) { 'min' } else { 'current' })（SW_SHOW*NOACTIVE，不激活）"; break }
         $before = Format-Window $w
+        $foregroundBefore = [HuWin]::ForegroundWindow().ToInt64()
         $ok = if ($wanted) { [HuWin]::MinimizeNoActivate([long]$w.Hwnd) } else { [HuWin]::RestoreNoActivate([long]$w.Hwnd) }
         Start-Sleep -Milliseconds 150
         $after = @((Get-HuWindows) | Where-Object { $_.Hwnd -eq $w.Hwnd })
         if (-not $ok -or -not $after.Count) { Stop-Hu "$Command 未生效：窗口拒绝了状态改变或已消失。before: $before" 1 }
-        Write-Output "$Command ok（未激活，前台未变）"
+        $foregroundAfter = [HuWin]::ForegroundWindow().ToInt64()
+        $foregroundState = Get-HuForegroundTransition $foregroundBefore $foregroundAfter ([long]$w.Hwnd)
+        Write-Output "$Command ok（SW_SHOW*NOACTIVE） foreground=$foregroundState before=$(Format-Hwnd $foregroundBefore) after=$(Format-Hwnd $foregroundAfter)"
         Write-Output "before: $before"
         Write-Output "after:  $(Format-Window $after[0])"
+        if ($foregroundState -eq 'unexpected-target') {
+            Stop-Hu "refused: $Command 已改变窗口状态，但目标意外取得前台；结果为 partial，未继续操作。" 2
+        }
         if (-not $wanted) { Write-Output "提示: 看完记得 win.ps1 minimize $(Format-Hwnd $w.Hwnd) 还原用户布局；刚还原的窗口首帧 PrintWindow 可能需要一两秒。" }
         break
     }

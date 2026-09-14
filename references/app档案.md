@@ -34,7 +34,7 @@ pwsh -NoProfile -File "$SKILL_DIR/scripts/win.ps1" see <hwnd> .\evidence\raw\app
 pwsh -NoProfile -File "$SKILL_DIR/scripts/win.ps1" uia <hwnd>
 
 # 5. 读取 Text/Document/Edit/Status/Header 的可见语义文本
-pwsh -NoProfile -File "$SKILL_DIR/scripts/win.ps1" uiaread <hwnd> [名称或 AutomationId]
+pwsh -NoProfile -File "$SKILL_DIR/scripts/win.ps1" uiaread <hwnd> --id <AutomationId>
 ```
 
 再按优先级实测：
@@ -271,6 +271,68 @@ L3_capture:
 ```
 
 可复现路径 `tests/notepad-profile.ps1`：`open(AUMID) → see（位置参数路径）→ 校验唯一 Document(ValuePattern)、单标签未修改、文档为空 → uiaset first → uiaread/uia 读回三指示器 → uiaset first '' → 读回归零 → CloseMainWindow`。
+
+### Windows 11 设置 · 10.0.26100.8875 · 隔离只读实测 2026-09-10
+
+> 第六个可重放档案：`tests/settings-profile.ps1`。它只验证系统应用身份、后台截图与过滤后的 UIA 读回，**不调用任何控件、不写搜索框、不改变设置**。已有 `SystemSettings` 进程或设置窗口时直接拒绝，避免覆盖用户当前页面。
+
+```yaml
+显示名: 设置
+实测日期: 2026-09-10
+版本: 10.0.26100.8875                     # 核对 2026-09-10
+安装形态: Windows 内置系统应用 / AUMID
+exe: C:\Windows\ImmersiveControlPanel\SystemSettings.exe  # 核对 2026-09-10
+包标识/AUMID: windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel
+架构: x64
+进程:
+  内容进程: SystemSettings.exe（Medium）
+  窗口宿主: ApplicationFrameHost.exe（Medium）
+  退出: 对精确设置 Frame 调 CloseMainWindow 后，本轮 SystemSettings 进程正常退出
+窗口:
+  owner: ApplicationFrameHost
+  title 规则: 精确“设置”（zh-CN）
+  class: ApplicationFrameWindow
+  主窗口识别: 可见、非 cloaked、标题和 class 同时匹配；不能仅按 ApplicationFrameHost PID
+  完整性: Medium
+
+L0:
+  CLI: 未发现
+  URL protocol: 未发现指向目标 exe/包的注册项
+  本地端口: 无
+  CDP: 无 Chromium 信号、无 remote-debugging 参数
+  COM: 未发现指向目标 exe/目录的 LocalServer32 或 TypeLib
+  启动: open 显示名解析到 AUMID；AUMID 启动不支持 --background，可能改变前台
+
+L1_UIA:
+  总体: 只读可用；probe 为 135 元素、47 个可操作候选，see 的动作表 44 个
+  只读判据: Text AutomationId=SettingsLabel 回读“设置”；Edit AutomationId=CommandSearchTextBox 回读“搜索框，查找设置”
+  输入定位: CommandSearchTextBox 唯一且有 ValuePattern/TextPattern，但本档案不写
+  动作定位: 导航项、更新、蓝牙 Toggle、设备连接等都有语义节点；未调用，不能把“列得到”写成“可安全操作”
+  实测焦点: UIA 读和 PrintWindow 不借前台；启动本身可能显示到前台
+
+L2_SendInput: 未测；L1 足以完成只读任务，系统配置动作不应为补覆盖率降级
+
+L3_capture:
+  PrintWindow_后台: 完整；窗口 2582x1550，see 降采样 1400x840、275 色桶
+  screen_合成: 未测；本轮无需借桌面合成
+  壳窗口/渲染窗口: 请求 ApplicationFrameWindow 可直接取得完整内容，未触发 sibling recovery
+
+验证:
+  只读结果: 截图 receipt 绑定请求 HWND/标题，UIA map 绑定同一 HWND；两个稳定 AutomationId 由独立 uiaread 过滤回读
+  最终副作用: 无设置写入；关闭精确 Frame 后内容进程退出
+
+安全:
+  风险类别: 系统配置 + 账号/设备隐私
+  停手点: Windows 更新、蓝牙开关、连接/删除设备、账户/云存储、重命名电脑及任何配置变更
+  敏感证据: UIA map 和截图会含登录账号、设备名、附近设备及网络状态；只放唯一临时目录，finally 删除，不输出完整 uiaread
+
+已知坑:
+  - 安装身份是 SystemSettings.exe，顶层窗口却属于 ApplicationFrameHost；只按进程名会漏窗，只按宿主会串到其它系统 app。
+  - UIA 语义树比截图更容易被误当“纯结构数据”，但 Name/Value 会直接带账号与设备名称；可重放测试必须过滤读取并清理原始 map。
+  - 找到 Invoke/Toggle/ValuePattern 不等于允许调用。系统设置的“读取覆盖”不以制造配置变更为完成标准。
+```
+
+可复现路径 `tests/settings-profile.ps1`：确认没有现有实例 → `open(AUMID)` → 精确解析 ApplicationFrameWindow → `see/uia/uiaread --summary` 只输出类型统计 → 校验唯一搜索框与 `uiaread --id` 精确读取的标题/搜索框 → CloseMainWindow → 删除整个临时证据目录。入口已从位置子串过滤升级为 worker 读前精确筛选；不要把历史观察视为所有新版路径都已实机重跑。
 
 ### Microsoft Excel · 16.0.20326.20132 · L0 COM 真实任务 2026-09-08
 
@@ -660,18 +722,19 @@ L3_capture:
 
 开始菜单、`Get-Command blender`、`C:\Program Files\Blender Foundation`、`D:\ruanjian` 均无安装。不编造 Windows 版 Python/`--background --python` 结论。用户自行安装并授权独立测试实例后，再按模板从 `probe.ps1` 重测。
 
-## 四·五、跨 app 的共性结论（2026-09-08，样本：计算器、记事本、WorkBuddy、Excel、WPS 表格、QQ、剪映、微信）
+## 四·五、跨 app 的共性结论（2026-09-10，样本：计算器、记事本、Windows 设置、WorkBuddy、Excel、WPS 表格、QQ、剪映、微信）
 
 每条至少两个不同实现复现；坐标、端口、HWND 一律不在此处。
 
 1. **起始状态多半是“没有可见窗口”。** QQ、微信、WPS、剪映、WorkBuddy 都在托盘/最小化态运行，Excel 自动化实例默认隐藏。`windows` 默认列不到它们，`--all` 里是 `state=hidden|min`；此时截图整帧 1 桶、UIA 空树、`screen` 拒绝——这是窗口状态，不是 app 能力。先分清状态再下结论；最小化的用 `restore`（不激活），隐藏的交给用户。
 2. **“再启动一次”不等于“显示已运行的窗口”。** QQ 会新起实例弹登录窗；剪映启动器转交后什么都不显示；Excel/WPS 的 COM 永远新起私有进程。`open` 对运行中的 app 只保证进程层的动作，窗口层必须回读 `windows`。
-3. **UIA 可用性不能按框架猜。** 同为 Electron：QQ 的 Chromium 树对 UIA 完整可读（Button/Edit/Document + 300 条文本），WorkBuddy 是空树。同为 Qt：微信（Qt5）秒回空树，剪映（Qt6）provider 挂死 6 秒。记事本（WinUI）Document 可写；WPS 自绘只露 55 个 Button；Excel 编辑栏可读而网格到不了。现场 `uia`/`uiaread` 各试一次，而且只能在隔离 worker 里试——剪映证明了为什么。
+3. **UIA 可用性不能按框架猜。** 同为 Electron：QQ 的 Chromium 树对 UIA 完整可读（Button/Edit/Document + 300 条文本），WorkBuddy 是空树。同为 Qt：微信（Qt5）秒回空树，剪映（Qt6）provider 挂死 6 秒。记事本（WinUI）Document 可写；Windows 设置可读 135 个元素；WPS 自绘只露 55 个 Button；Excel 编辑栏可读而网格到不了。现场 `uia`/`uiaread` 各试一次，而且只能在隔离 worker 里试——剪映证明了为什么。
 4. **COM 是 Windows 的 AppleScript 字典，但要核对身份。** Excel 与 WPS 共用 ProgID（Excel.Application.12）、窗口类名（XLMAIN）甚至 Application.Name（“Microsoft Excel”）；32/64 位注册表视图决定谁应答。exe 路径是唯一可信身份；用 KET.Application 明确指 WPS。COM 对象不能穿过 PowerShell 函数返回，RCW 不释放会让进程挂到 DCOM 超时。
-5. **可见窗口的 PrintWindow 基本可靠；空帧几乎都是状态问题。** 八个可见窗口全部截到（46–404 桶）。复现的三种空帧：窗口隐藏（剪映、未显示的 Excel）、空白文档（记事本）、刚还原的首帧（QQ，已加一次 400ms 重试）。“app 拒绝后台渲染”本轮一次都没遇到——别把它当默认解释。
+5. **可见窗口的 PrintWindow 基本可靠；空帧几乎都是状态问题。** 九个可见窗口全部截到（46–404 桶）。复现的三种空帧：窗口隐藏（剪映、未显示的 Excel）、空白文档（记事本）、刚还原的首帧（QQ，已加一次 400ms 重试）。“app 拒绝后台渲染”本轮一次都没遇到——别把它当默认解释。
 6. **`screen` 拍到的常常是别的窗口。** 新出现的私有窗口（WPS、Excel 自动化）和 `restore` 回来的窗口（QQ）都排在前台 IDE 后面，5/5 采样被遮；剪映环境检测被 QQ 挡住。合成图只做交叉验证，不做内容证据。
 7. **本地端口 ≠ CDP。** WorkBuddy 多个端口 404，QQ 两个 HTTP 200，微信五个无响应，剪映 7264 无响应，WPS 云服务 4709——全都不是 CDP。只有 `/json/version` 返回 `webSocketDebuggerUrl` 且 owner 属于目标进程树才算。
 8. **状态指示器比像素可信。** WorkBuddy 发送键 disabled↔enabled、记事本“N 个字符”与标签“已修改”、Excel 编辑栏公式、计算器结果文本、WPS/Excel 另存文件里的缓存值——每个档案的“最强证据”都不是截图。
+9. **语义树本身也是敏感证据。** Windows 设置的 UIA Name/Value 直接包含登录账号、电脑/手机/蓝牙设备与网络状态；Excel UIA 会暴露账户菜单姓名，QQ/WorkBuddy 的 UIA/CDP 会带会话标题或账号 query。`uiaread`/`snapshot`/map 不能因为“不是截图”就进入日志或仓库；先用 `see/uia/uiaread --summary` 看类型统计，再定向读取，原始证据进临时目录并清理。
 
 ## 五、如何写“可用”
 

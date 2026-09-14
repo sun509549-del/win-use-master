@@ -15,40 +15,25 @@ concurrency:
 
 jobs:
   validate:
-    name: Parse, build and headless integration tests
+    name: Core contracts (Node 24)
     runs-on: windows-latest
     timeout-minutes: 15
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
+          package-manager-cache: false
 
       - name: Parse PowerShell and JavaScript
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $parseErrors = [Collections.Generic.List[object]]::new()
-          Get-ChildItem -LiteralPath . -Recurse -Filter '*.ps1' | ForEach-Object {
-            $tokens = $null
-            $errors = $null
-            [Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
-            foreach ($error in $errors) { $parseErrors.Add($error) }
-          }
-          if ($parseErrors.Count) {
-            $parseErrors | ForEach-Object { Write-Error "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
-            throw "PowerShell parse failed with $($parseErrors.Count) error(s)."
-          }
-          node --check cdp.js
-          if ($LASTEXITCODE -ne 0) { throw 'cdp.js parse failed.' }
-          node --check scripts/cdp.js
-          if ($LASTEXITCODE -ne 0) { throw 'scripts/cdp.js parse failed.' }
-          node --check tests/cdp-fixture.js
-          if ($LASTEXITCODE -ne 0) { throw 'tests/cdp-fixture.js parse failed.' }
+          & pwsh -NoProfile -File tests/parse-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "parse-contract.ps1 failed with exit $LASTEXITCODE" }
 
       - name: Build native helper
         shell: pwsh
@@ -62,6 +47,80 @@ jobs:
         run: |
           & pwsh -NoProfile -File tests/static-contract.ps1
           if ($LASTEXITCODE -ne 0) { throw "static-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify CI security and runtime contract
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/ci-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "ci-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify tiered test runner contract
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/test-runner-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "test-runner-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify exact UIA read contract without a desktop
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/uia-read-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "uia-read-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify isolated UIA deadlines and unknown effects
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/uia-timeout.ps1
+          if ($LASTEXITCODE -ne 0) { throw "uia-timeout.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify no-activate window-state classification
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/window-state-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "window-state-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Confirm generated artifacts remain untracked
+        shell: pwsh
+        run: |
+          $unexpected = @(git status --short --untracked-files=all)
+          if ($LASTEXITCODE -ne 0) { throw 'git status failed.' }
+          if ($unexpected.Count) {
+            $unexpected | Write-Output
+            throw 'Tests left tracked or unignored artifacts in the worktree.'
+          }
+
+  cdp:
+    name: CDP contracts (Node ${{ matrix.node-version }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['22', '24']
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+
+      - name: Verify selected Node.js major
+        shell: pwsh
+        run: |
+          $actual = [int](((& node --version).TrimStart('v') -split '\.')[0])
+          $expected = [int]'${{ matrix.node-version }}'
+          if ($actual -ne $expected) { throw "Expected Node $expected, got $actual" }
+
+      - name: Parse CDP JavaScript
+        shell: pwsh
+        run: |
+          foreach ($path in @('cdp.js', 'scripts/cdp.js', 'tests/cdp-fixture.js')) {
+            & node --check $path
+            if ($LASTEXITCODE -ne 0) { throw "JavaScript parse failed: $path" }
+          }
 
       - name: Verify CDP port ownership guard
         shell: pwsh

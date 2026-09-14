@@ -1,6 +1,6 @@
 # 与 huashu-mac-use 的功能差距
 
-> 基线：上游 [huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use) 的 README/SKILL 所表达的设计，以及用户提供的[相关文章](https://mp.weixin.qq.com/s/pgvLMG7pg_1lpPLMN8zbhg)。本表记录 Windows 版本的工程差距，不把操作系统做不到的能力伪装成待实现功能。更新日期：2026-09-09。
+> 基线：上游 [huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use) 的 README/SKILL 所表达的设计，以及用户提供的[相关文章](https://mp.weixin.qq.com/s/pgvLMG7pg_1lpPLMN8zbhg)。本表记录 Windows 版本的工程差距，不把操作系统做不到的能力伪装成待实现功能。更新日期：2026-09-14。
 
 ## 已经对齐
 
@@ -29,21 +29,24 @@
 | CDP 零焦点可逆写与撤回 | `insert` + `press SelectAll`/`Backspace` 真实键事件；WorkBuddy 上以发送键 disabled 状态为指示器全链路回归 |
 | 编辑器正文不进日志 | 采集时打 `editable` 标记，`role=textbox` 的 Slate/ProseMirror 差分只显示字符数；无头 Edge 回归守住 |
 | 隐藏窗口不误判 | `windows --all` 标 `state=hidden`；`shot` 直说不可见、`screen`/L2/`shotfg` 拒绝 |
-| 用户要求时还原/最小化窗口 | `restore`/`minimize`：`SW_SHOW*NOACTIVE` 不改前台，隐藏窗口拒绝，打印前后状态（Mac 靠 `mac open` 激活） |
+| 用户要求时还原/最小化窗口 | `restore`/`minimize`：使用 `SW_SHOW*NOACTIVE` 请求，隐藏窗口拒绝，并把前台迁移分类为未变化、Windows 释放、外部变化或意外目标；不把“还原后恰好成为前台”误报成工具主动激活（Mac 靠 `mac open` 激活） |
 | COM 作为 L0 的真实写路径 | Excel/WPS 两个私有实例档案：身份核对、Visible 时机、RCW 释放、不经宿主验证文件；`win.ps1 com <ProgID>` 做注册视图与身份核对（Mac 对应 `sdef`） |
 | 窗口列表可读 | `windows --all` 折叠 Qt/CEF 的几百个无标题消息窗，`--raw` 才全列 |
 | app 经验回流与版本自检 | `app档案.md`、30 天静默版本检查 |
 | 架构可视化与发布契约 | README 内嵌仓库原生 SVG；CI 检查必需文件、风险规则、文档链接、SVG 安全性、兼容入口与 Skill 体积 |
+| 系统设置类样本 | Windows 11 设置隔离只读档案：AUMID 启动、ApplicationFrameHost/SystemSettings 双进程身份、PrintWindow 与过滤 UIA 回读；零设置写入，敏感 map 用后删除 |
+| 跨 app 共性结论 | 9 个 app 归纳 9 条，每条至少有两个不同实现支撑；新增“语义树也是敏感证据”并由设置/Excel/WorkBuddy 交叉复现 |
+| 敏感语义输出最小化 | `see/uia/uiaread --summary` 只输出元素数量/类型统计，不把 UIA 名称、值或过滤词展开到终端；Settings 与 WinForms fixture 回归守住 |
+| UIA 定向读取 | `uiaread --id` 在读取正文前精确筛选唯一 AutomationId，避免旧子串过滤带出无关控件；无桌面 provider 契约与 WinForms 实机回归分开验证 |
 
 ## 仍缺少或样本不足
 
 | 优先级 | 差距 | 当前状态 / 完成标准 |
 |---|---|---|
-| P1 | 真实 app 档案广度 | 完整可重放档案五个：计算器（Invoke）、记事本（Document ValuePattern）、WorkBuddy（CDP 零焦点写/撤回）、Excel（COM 私有实例写表另存并不经 Excel 验证）、WPS 表格（KET.Application 同任务 + 二次打开）。只读档案：QQ（UIA 可读）、微信（Qt5 UIA 空树）、剪映（UIA 挂死），三者 PrintWindow 都完整、都无 CDP。Mac 11 个 app；Windows 8 个，Blender、系统设置类样本仍缺，微信/QQ 的写路径未测。 |
-| P1 | 跨 app 共性结论 | 已有 8 条（`app档案.md` 四·五节，8 个 app），每条 ≥2 个实现复现；比 Mac 的 9 条少一轮证伪周期。 |
+| P1 | 真实 app 档案广度 | 可重放档案六个：计算器、记事本、WorkBuddy、Excel、WPS 表格，以及零写入的 Windows 设置；另有 QQ、微信、剪映三个只读观察档案。Mac 11 个 app；Windows 9 个，Blender 与微信/QQ 的写路径仍未测。 |
 | P1 | 面向用户的真实案例素材不足 | 分层控制、安全边界与证据闭环架构图已经补齐；仍缺经脱敏的 Windows 原生/UIA/CDP 真实案例或 GIF，且不能拿测试 fixture 冒充生产案例。 |
 | P1 | 单 app 经验的广度不足 | Mac 档案覆盖多个 Electron 和原生 app；Windows 需要随真实任务渐进积累，不能凭框架名称推断 UIA/CDP/截图一定可用。 |
-| P2 | 翻车过程文档 | `references/踩坑实录.md` 已起稿：21 条现象→归因→落点→证据，另有“哪些 Mac 结论在 Windows 上不成立”一节。比 Mac 的 519 行薄，但每条都对应今天的代码改动或档案条目。 |
+| P2 | 翻车过程文档 | `references/踩坑实录.md` 已记录 23 条现象→归因→落点→证据，另有“哪些 Mac 结论在 Windows 上不成立”一节。比 Mac 的 519 行薄，但每条都对应本项目的代码改动、测试或档案条目。 |
 
 ## 不应照搬的“差距”
 
@@ -54,5 +57,5 @@ Mac 版可以先尝试向指定 PID 投递合成事件，失败后再借焦点�
 ## 下一步顺序
 
 1. 剪映 CEF `--remote-debugging-port` 与更新弹窗（需用户授权重启/显示）作为第二个 Chromium 实现。
-2. 微信、系统设置、Blender 等补样本；QQ 输入框写路径需用户指定可逆目标。
+2. 微信、Blender 等补样本；QQ 输入框写路径需用户指定可逆目标。系统设置只读样本已完成，不为“覆盖率”调用会改变配置的控件。
 3. 经脱敏的真实案例素材与 `踩坑实录.md`。

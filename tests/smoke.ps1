@@ -91,6 +91,17 @@ try {
     }
     Write-Output 'see-positional: pwsh -File PASS'
 
+    $seeSummary = Join-Path $evidence 'see-summary.png'
+    $seeSummaryOut = @(& $hostExe -NoProfile -File $win see $hwnd $seeSummary --summary 2>&1)
+    $seeSummaryText = $seeSummaryOut -join "`n"
+    if ($LASTEXITCODE -or -not (Test-Path -LiteralPath $seeSummary) -or
+        -not (Test-Path -LiteralPath ($seeSummary + '.uia.json')) -or
+        $seeSummaryText -notmatch '--summary 已省略名称/值' -or
+        $seeSummaryText -match 'Fixture input|Apply fixture value|Continue|win-use-master smoke fixture|title=') {
+        throw "see --summary 没有保留 map 并抑制窗口标题/UIA 语义明细：$seeSummaryText"
+    }
+    Write-Output 'see-summary: UIA names suppressed, local map retained PASS'
+
     & $win clickin $hwnd 0.5 0.5 --dry
     if ($LASTEXITCODE) { throw "clickin --dry exit=$LASTEXITCODE" }
     & $win clickin $hwnd ("e1@" + $see + '.uia.json') 0 --dry
@@ -191,10 +202,48 @@ try {
     $uia = @(& $win uia $hwnd)
     if ($LASTEXITCODE -or -not ($uia -match 'Edit')) { throw 'UIA 没有枚举到 fixture Edit。' }
     $uia | Select-Object -First 20
+    $uiaSummary = @(& $hostExe -NoProfile -File $win uia $hwnd --summary 2>&1)
+    $uiaSummaryText = $uiaSummary -join "`n"
+    if ($LASTEXITCODE -or $uiaSummaryText -notmatch 'UIA --summary 已省略名称/值' -or
+        $uiaSummaryText -match 'Fixture input|Apply fixture value|Continue') {
+        throw "uia --summary 泄露了控件语义明细：$uiaSummaryText"
+    }
     $uiaRead = @(& $win uiaread $hwnd 'instructionLabel')
     if ($LASTEXITCODE -or (($uiaRead -join "`n") -notmatch 'Safe local automation fixture')) {
         throw 'uiaread 没有读取到 fixture 静态文本。'
     }
+    $uiaReadSummary = @(& $hostExe -NoProfile -File $win uiaread $hwnd --summary 2>&1)
+    $uiaReadSummaryText = $uiaReadSummary -join "`n"
+    if ($LASTEXITCODE -or $uiaReadSummaryText -notmatch 'UIA read --summary 已省略名称/值' -or
+        $uiaReadSummaryText -match 'Safe local automation fixture|Fixture input|status:') {
+        throw "uiaread --summary 泄露了可读语义明细：$uiaReadSummaryText"
+    }
+    $privateFilter = 'Safe local automation fixture'
+    $filteredSummary = @(& $hostExe -NoProfile -File $win uiaread $hwnd $privateFilter --summary 2>&1)
+    $filteredSummaryText = $filteredSummary -join "`n"
+    if ($LASTEXITCODE -or $filteredSummaryText -notmatch 'filter=<set> mode=summary' -or
+        $filteredSummaryText.Contains($privateFilter)) {
+        throw "uiaread --summary 回显了过滤词：$filteredSummaryText"
+    }
+    Write-Output 'uia-summary: action/read names and values suppressed PASS'
+    $exactRead = @(& $hostExe -NoProfile -File $win uiaread $hwnd --id instructionLabel 2>&1)
+    $exactText = $exactRead -join "`n"
+    if ($LASTEXITCODE -or $exactText -notmatch '(?m)^UIA read window=.* elements=1 filter=<exact-id>' -or
+        $exactText -notmatch 'Safe local automation fixture' -or $exactText -match 'Fixture input|status:') {
+        throw "uiaread --id 没有通过独立 worker 精确读取唯一静态标签：$exactText"
+    }
+    $missingRead = @(& $hostExe -NoProfile -File $win uiaread $hwnd --id instruction 2>&1)
+    if ($LASTEXITCODE -ne 2 -or (($missingRead -join "`n") -notmatch 'exact AutomationId must match one readable element')) {
+        throw 'uiaread --id 仍按子串匹配，或没有传回 worker 的拒绝退出码。'
+    }
+    $exactSummary = @(& $hostExe -NoProfile -File $win uiaread $hwnd --id instructionLabel --summary 2>&1)
+    $exactSummaryText = $exactSummary -join "`n"
+    if ($LASTEXITCODE -or $exactSummaryText -notmatch '(?m)^UIA read window=.* elements=1 filter=<exact-id>' -or
+        $exactSummaryText -notmatch 'filter=<exact-id> mode=summary' -or
+        $exactSummaryText -match 'instructionLabel|Safe local automation fixture|Fixture input|status:') {
+        throw 'uiaread --id --summary 没有抑制 ID/名称/值。'
+    }
+    Write-Output 'uiaread-exact: child CLI/worker, unique label, missing ID refusal and summary PASS'
     Write-Output 'uiaread: static text PASS'
     $uiasetOutput = @(& $win uiaset $hwnd first 'semantic-smoke')
     $uiasetOutput | Write-Output
@@ -215,7 +264,7 @@ try {
     if ($LASTEXITCODE -ne 2 -or (($dangerInvoke -join "`n") -notmatch '高风险最终动作规则')) {
         throw "L1 UIA 高风险 invoke 没有在动作前拒绝：exit=$LASTEXITCODE output=$($dangerInvoke -join ' | ')"
     }
-    $dangerStatus = @(& $win uiaread $hwnd 'fixtureStatus')
+    $dangerStatus = @(& $win uiaread $hwnd --id fixtureStatus)
     if ($LASTEXITCODE -or (($dangerStatus -join "`n") -match 'DANGER-RAN')) {
         throw '被拒绝的 UIA invoke 仍改变了 fixture 状态。'
     }
@@ -229,9 +278,19 @@ try {
     foreach ($line in $invokeOutput) {
         if ($line -match '^verification: (.+) receipt=(.+)$') { [void]$transientEvidence.Add($Matches[1]); [void]$transientEvidence.Add($Matches[2]) }
     }
-    $statusRead = @(& $win uiaread $hwnd 'fixtureStatus')
-    if ($LASTEXITCODE -or (($statusRead -join "`n") -notmatch 'status: semantic-smoke')) {
-        throw 'InvokePattern 后 uiaread 没有读回 fixture 状态。'
+    # InvokePattern can return before a provider exposes the UI-thread label
+    # update. Re-read the independent semantic endpoint for at most 1.25 s; this
+    # verifies one already-issued action and never replays it.
+    $statusRead = @()
+    $statusExit = 1
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        $statusRead = @(& $win uiaread $hwnd --id fixtureStatus)
+        $statusExit = $LASTEXITCODE
+        if (-not $statusExit -and (($statusRead -join "`n") -match 'status: semantic-smoke')) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if ($statusExit -or (($statusRead -join "`n") -notmatch 'status: semantic-smoke')) {
+        throw "InvokePattern 后 uiaread 没有读回 fixture 状态：exit=$statusExit fixture-exited=$($fixtureProcess.HasExited) output=$($statusRead -join ' | ')"
     }
     Write-Output 'uiaread: action side-effect PASS'
     $oldHud = $env:WIN_USE_MASTER_HUD
@@ -287,14 +346,24 @@ try {
     }
     $minShot = @(& $hostExe -NoProfile -File $win shot $hwnd (Join-Path $evidence 'minimized.png') 2>&1)
     if ($LASTEXITCODE -ne 2) { throw "最小化窗口的 shot 应退出 2，得到 $LASTEXITCODE：$($minShot -join ' ')" }
+    # SW_SHOWMINNOACTIVE may leave an already-foreground target as the foreground
+    # HWND while it is minimized. That is not a new activation by restore. Only
+    # a transition from some other foreground HWND to the target violates the
+    # no-activate contract.
+    $fgBeforeRestore = [HuWin]::ForegroundWindow().ToInt64()
     $restoreOut = @(& $win restore $hwnd)
+    $fgAfterRestore = [HuWin]::ForegroundWindow().ToInt64()
     if ($LASTEXITCODE -or (($restoreOut -join "`n") -notmatch 'after:  id=.* state=current ')) { throw "restore 失败：$($restoreOut -join ' ')" }
-    # The user/desktop may legitimately change foreground while this test runs;
-    # the invariant owned by restore is only that it must not activate the target.
-    if ([HuWin]::ForegroundWindow().ToInt64() -eq ([Convert]::ToInt64($hwnd.Substring(2), 16))) { throw 'restore 重新激活了被测窗口。' }
+    $targetHwnd = [Convert]::ToInt64($hwnd.Substring(2), 16)
+    if ($fgBeforeRestore -ne $targetHwnd -and $fgAfterRestore -eq $targetHwnd) {
+        throw "restore 新激活了被测窗口：before=0x$($fgBeforeRestore.ToString('X')) after=$hwnd"
+    }
+    if (($restoreOut -join "`n") -notmatch 'foreground=(unchanged|target-already|released-by-windows|changed-external)') {
+        throw "restore 没有报告可审计的前台迁移：$($restoreOut -join ' ')"
+    }
     & $win shot $hwnd (Join-Path $evidence 'restored.png') | Out-Null
     if ($LASTEXITCODE) { throw "restore 后 shot exit=$LASTEXITCODE" }
-    Write-Output 'window-state: minimize/restore no-activate PASS'
+    Write-Output "window-state: minimize/restore no-new-activation PASS foreground-before-restore=0x$($fgBeforeRestore.ToString('X'))"
 
     # COM identity check must stay registry-only under --dry (no instance started),
     # and must fail cleanly for an unknown ProgID.

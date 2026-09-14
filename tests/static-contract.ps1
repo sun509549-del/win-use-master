@@ -8,9 +8,11 @@ function Assert-Contract([bool] $Condition, [string] $Message) {
 }
 
 $requiredFiles = @(
-    'README.md', 'SKILL.md', 'HANDOFF.md', 'LICENSE', 'cdp.js',
+    'README.md', 'SKILL.md', 'HANDOFF.md', 'PROJECT_STATUS.md', 'IMPLEMENTATION_PLAN.md', 'LICENSE', 'cdp.js',
     'config/risk-actions.json', 'assets/architecture.svg',
-    'scripts/win.ps1', 'scripts/uia-worker.ps1', 'scripts/cdp.js', 'scripts/HuWin.cs'
+    'scripts/win.ps1', 'scripts/uia-worker.ps1', 'scripts/cdp.js', 'scripts/HuWin.cs',
+    'tests/parse-contract.ps1', 'tests/run-tests.ps1', 'tests/test-runner-contract.ps1', 'tests/ci-contract.ps1',
+    'tests/settings-profile.ps1', 'tests/uia-read-contract.ps1', 'tests/window-state-contract.ps1'
 )
 foreach ($relative in $requiredFiles) {
     Assert-Contract (Test-Path -LiteralPath (Join-Path $root $relative) -PathType Leaf) "缺少发布文件 $relative"
@@ -20,6 +22,8 @@ $skill = Get-Content -LiteralPath (Join-Path $root 'SKILL.md') -Raw -Encoding ut
 Assert-Contract ($skill -match '(?s)\A---\s*\r?\nname:\s*win-use-master\s*\r?\ndescription:') 'SKILL.md frontmatter 缺失或名称不正确'
 Assert-Contract ($skill.Length -le 6000) "SKILL.md 超过 6000 字符（当前 $($skill.Length)）"
 Assert-Contract ($skill -match '2 绝不能当成功') 'SKILL.md 丢失退出码 2 的安全约定'
+Assert-Contract ($skill -match 'see <hwnd>.*--summary') 'SKILL.md 丢失敏感窗口的 see --summary 约定'
+Assert-Contract ($skill -match 'uia/uiaread --summary') 'SKILL.md 丢失敏感 UIA 读取的摘要约定'
 
 $compat = Get-Content -LiteralPath (Join-Path $root 'cdp.js') -Raw -Encoding utf8
 Assert-Contract ($compat.Length -le 512) '根目录 cdp.js 应保持轻量兼容入口'

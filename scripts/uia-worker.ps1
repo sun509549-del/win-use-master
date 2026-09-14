@@ -132,7 +132,7 @@ function Get-ActionElements($Root, $Bounds, [int] $Limit) {
     return @($out)
 }
 
-function Get-ReadableElements($Root, [int] $Limit) {
+function Get-ReadableElements($Root, [int] $Limit, [string] $ExactId = '') {
     $types = @(
         [Windows.Automation.ControlType]::Text,
         [Windows.Automation.ControlType]::Document,
@@ -146,13 +146,34 @@ function Get-ReadableElements($Root, [int] $Limit) {
         $conditions.Add([Windows.Automation.PropertyCondition]::new(
             [Windows.Automation.AutomationElement]::ControlTypeProperty, $type))
     }
-    $found = $Root.FindAll([Windows.Automation.TreeScope]::Descendants,
-        [Windows.Automation.OrCondition]::new($conditions.ToArray()))
+    $condition = [Windows.Automation.OrCondition]::new($conditions.ToArray())
+    if ($ExactId) {
+        # Filter in the provider before truncating or reading Name/Value. An ID
+        # must resolve to exactly one readable element, even beyond the usual
+        # 300-item limit; duplicate IDs must not expose either candidate's text.
+        $condition = [Windows.Automation.AndCondition]::new($condition,
+            [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::AutomationIdProperty, $ExactId))
+    }
+    try {
+        $found = $Root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
+    } catch {
+        if ($ExactId) {
+            Complete-Worker @{ ok = $false; refused = $true; error = 'exact UIA query unavailable; refresh the target' } 2
+        }
+        throw
+    }
+    if ($ExactId -and $found.Count -ne 1) {
+        Complete-Worker @{ ok = $false; refused = $true; error = 'exact AutomationId must match one readable element' } 2
+    }
     $out = [Collections.Generic.List[object]]::new()
     for ($i = 0; $i -lt $found.Count -and $out.Count -lt $Limit; $i++) {
-        $element = $found.Item($i)
         try {
+            $element = $found.Item($i)
             $current = $element.Current
+            if ($ExactId -and [string]$current.AutomationId -cne $ExactId) {
+                throw 'exact UIA identity changed after selection'
+            }
             $isPassword = [bool]$current.IsPassword
             $value = ''
             if (-not $isPassword) {
@@ -171,7 +192,15 @@ function Get-ReadableElements($Root, [int] $Limit) {
                 name = $name; automationId = [string]$current.AutomationId; value = $value
                 isPassword = $isPassword; offscreen = [bool]$current.IsOffscreen
             })
-        } catch { continue }
+        } catch {
+            if ($ExactId) {
+                Complete-Worker @{ ok = $false; refused = $true; error = 'exact UIA read unavailable; refresh the target' } 2
+            }
+            continue
+        }
+    }
+    if ($ExactId -and $out.Count -ne 1) {
+        Complete-Worker @{ ok = $false; refused = $true; error = 'exact UIA read returned no readable content' } 2
     }
     return @($out)
 }
@@ -214,7 +243,8 @@ try {
     $limit = if ($request.limit) { [Math]::Max(1, [Math]::Min(500, [int]$request.limit)) } else { 300 }
 
     if ($mode -eq 'read') {
-        $items = @(Get-ReadableElements $root $limit)
+        $exactId = if ($request.PSObject.Properties.Name -contains 'exactId') { [string]$request.exactId } else { '' }
+        $items = @(Get-ReadableElements $root $limit -ExactId $exactId)
         Complete-Worker @{ ok = $true; items = $items }
     }
 

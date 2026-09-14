@@ -47,11 +47,24 @@ try {
     }
     if (-not $transientEvidence.Count) { throw 'UIA 超时后没有留下可审计的 after 收据。' }
 
-    $readback = @(& $win uiaread $hwnd fixtureInput)
+    $readback = @(& $win uiaread $hwnd --id fixtureInput)
     if ($LASTEXITCODE -or (($readback -join "`n") -match 'timeout-probe')) {
         throw '测试注入的 worker hang 不应改变 fixture 输入值。'
     }
     Write-Output ("PASS: isolated UIA write timeout={0:F2}s exit=2 receipt-effect=unknown" -f $clock.Elapsed.TotalSeconds)
+
+    [Environment]::SetEnvironmentVariable('HUASHU_UIA_WORKER_TEST_HANG', 'read', 'Process')
+    $clock.Restart()
+    $readOutput = @(& $hostExe -NoProfile -File $win uiaread $hwnd --id fixtureInput --summary 2>&1)
+    $readExit = $LASTEXITCODE
+    $clock.Stop()
+    [Environment]::SetEnvironmentVariable('HUASHU_UIA_WORKER_TEST_HANG', $previousHook, 'Process')
+    $readText = $readOutput -join "`n"
+    if ($readExit -ne 2 -or $clock.Elapsed.TotalSeconds -lt 5.5 -or $clock.Elapsed.TotalSeconds -gt 10 -or
+        $readText -notmatch 'UIA 读取超过 6 秒' -or $readText -match 'fixtureInput|Fixture input|UIA read window=') {
+        throw "精确 UIA 读取未遵守 6 秒截止与无正文失败契约：exit=$readExit output=$readText"
+    }
+    Write-Output ("PASS: isolated exact UIA read timeout={0:F2}s exit=2 no-success-summary" -f $clock.Elapsed.TotalSeconds)
 } finally {
     [Environment]::SetEnvironmentVariable('HUASHU_UIA_WORKER_TEST_HANG', $previousHook, 'Process')
     if ($fixtureProcess -and -not $fixtureProcess.HasExited) {

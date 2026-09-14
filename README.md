@@ -86,9 +86,11 @@ pwsh -NoProfile -File "$SKILL_DIR\scripts\probe.ps1" "notepad.exe"
 ```powershell
 & "$SKILL_DIR\scripts\win.ps1" windows "记事本"
 & "$SKILL_DIR\scripts\win.ps1" see <hwnd> .\evidence\notepad-see.png
+# 账号、聊天、设备等敏感页面：保留本地 map，但不把 UIA 名称/值展开到终端
+& "$SKILL_DIR\scripts\win.ps1" see <hwnd> .\evidence\private-see.png --summary
 ```
 
-`see` 会生成缩略窗口图、`.receipt.json` 收据和 `.uia.json` 元素图。先读这些，再决定是否需要写。输出路径用位置参数；`--out` 只在进程内 `&` 调用时可用，经 `pwsh -File` 会被宿主当成二义的 `-OutVariable/-OutBuffer` 前缀而拒绝。
+`see` 会生成缩略窗口图、`.receipt.json` 收据和 `.uia.json` 元素图。先读这些，再决定是否需要写。`--summary` 的正常结果省略窗口标题和 UIA 名称/值，截图、收据与 map 仍可能含敏感内容，必须按证据规范保存和清理；它不是所有诊断错误的通用脱敏器，敏感窗口应使用精确 HWND。输出路径用位置参数；`--out` 只在进程内 `&` 调用时可用，经 `pwsh -File` 会被宿主当成二义的 `-OutVariable/-OutBuffer` 前缀而拒绝。
 
 ## 四层控制面
 
@@ -124,12 +126,17 @@ CDP 可在窗口被遮挡时读写渲染页面，也能避免抢焦点。但它�
 
 ```powershell
 & "$SKILL_DIR\scripts\win.ps1" uia <hwnd>
-& "$SKILL_DIR\scripts\win.ps1" uiaread <hwnd> [名称或 AutomationId]
+& "$SKILL_DIR\scripts\win.ps1" uiaread <hwnd> [模糊过滤词]
+& "$SKILL_DIR\scripts\win.ps1" uiaread <hwnd> --id <AutomationId>
+& "$SKILL_DIR\scripts\win.ps1" uia <hwnd> --summary
+& "$SKILL_DIR\scripts\win.ps1" uiaread <hwnd> --summary
 & "$SKILL_DIR\scripts\win.ps1" uiaset <hwnd> first "测试文本"
 & "$SKILL_DIR\scripts\win.ps1" invoke <hwnd> e3
 ```
 
-`uiaread` 专门读取 Text/Document/Edit/Status/Header 语义内容，可按名称、值或 AutomationId 过滤；密码控件只返回脱敏标记。所有 UIA 枚举、读取、引用解析与动作都在独立 worker 中执行，6 秒不返回就终止 worker，避免异常 provider 卡死 agent。读操作超时表示本轮不可用；写操作超时必须标成 `effect=unknown`，因为动作可能已发生，禁止自动重试。
+`uiaread` 专门读取 Text/Document/Edit/Status/Header 语义内容；密码控件不读取 Value/Text。位置过滤词保留旧行为：先读取最多 300 项，再匹配 Name/Value/AutomationId 子串，不是隐私隔离。新增 `--id` 使用区分大小写的精确 AutomationId，在 worker 读取名称/正文前筛选，不受前 300 项截断影响；可读类型中必须唯一，零匹配、多匹配或目标失效都退出 2，且不与模糊过滤词混用。
+
+敏感页先用 `uia/uiaread --summary` 获取元素数量与 ControlType 统计，再用 `uiaread <hwnd> --id <AutomationId>` 做最小范围读取；摘要模式不回显过滤词或 ID，但不是禁止采集正文。所有 UIA 枚举、读取、引用解析与动作都在独立 worker 中执行，6 秒不返回就终止 worker，避免异常 provider 卡死 agent。读操作超时表示本轮不可用；写操作超时必须标成 `effect=unknown`，因为动作可能已发生，禁止自动重试。
 
 `uiaset` 只对支持 `ValuePattern` 的元素生效，Edit 与 Document 都算（记事本 11 的文本区就是 RichEdit Document，`first` 在没有 Edit 时会兜底选它）；`invoke` 会先在只读 worker 中按当前语义身份重定位，再按共享风险规则检查 Name、AutomationId 和 ClassName，命中最终动作或控件无标签就会在 before 截图和 pattern 调用前退出 2。通过后，动作 worker 会再次重定位并复核。它们通常不借前台，但返回成功仍可能是应用层 no-op。必须继续检查读回、按钮状态或最终副作用。写入正文通过 stdin 传给 worker，不出现在 worker 命令行。
 
@@ -184,7 +191,7 @@ Windows `SendInput` 是全局输入流，不携带目标 PID/HWND。工具会短
 - **UIPI**：普通权限无法可靠输入管理员窗口；自身或目标完整性读不到也按不安全拒绝，`--force` 绕不过。
 - **锁屏/UAC 安全桌面**：拒绝输入和不可信截图，不模拟同意。
 - **虚拟桌面**：目标 `cloaked` 时拒绝坐标写，不自动发送快捷键切桌面。
-- **隐藏窗口**：`windows --all` 把未显示的窗口标成 `state=hidden`（托盘态、尚未显示的编辑器、后台弹窗）。它们 `PrintWindow` 只有空帧，`screen` 拒绝，坐标写也拒绝——激活它等于替用户把窗口弹出来。最小化的窗口不同：用户明确要求操作该 app 时，`restore` 用 `SW_SHOWNOACTIVATE` 把它放回原位而不抢焦点，看完 `minimize` 还原布局；两者都打印前后状态。最小化（`state=min`）的窗口不同：用户明确要求时可用 `restore` 不激活地还原，看完用 `minimize` 放回去；两者都打印前后状态。
+- **隐藏窗口**：`windows --all` 把未显示的窗口标成 `state=hidden`（托盘态、尚未显示的编辑器、后台弹窗）。它们 `PrintWindow` 只有空帧，`screen` 拒绝，坐标写也拒绝——激活它等于替用户把窗口弹出来。最小化（`state=min`）的窗口不同：用户明确要求时可用 `restore` 不主动激活地还原，看完用 `minimize` 放回去；两者都打印窗口状态和前台迁移。目标若在调用前已经是前台，最小化后仍可能保留前台 HWND；只把“其它前台 → 目标”判为新激活。
 - **遮挡**：落点最上层不是目标窗口就拒绝。
 - **HUD**：借前台时给用户可见提示，鼠标穿透；排除截图是 best effort，证据仍需抽查。
 
@@ -204,12 +211,12 @@ $WIN = "$SKILL_DIR\scripts\win.ps1"
 
 ```text
 win.ps1 windows [关键词] [--all] [--raw]   # --all 含隐藏/最小化窗口；--raw 连 Qt/CEF 的无标题消息窗也列
-win.ps1 see <hwnd|pid|owner> [path]        # --out 仅进程内 & 调用可用
+win.ps1 see <hwnd|pid|owner> [path] [--summary] # 敏感页不展开 UIA 明细；--out 仅进程内
 win.ps1 shot <hwnd|owner> <path>
 win.ps1 shotfg <hwnd|owner> <path>         # 后台近空图时才借前台重试 PrintWindow
 win.ps1 screen <path> [--window <target>] [--region x y w h]  # 桌面合成，交叉验证陈旧帧
-win.ps1 uia <hwnd|pid|owner>
-win.ps1 uiaread <hwnd|pid|owner> [名称或 AutomationId 过滤]
+win.ps1 uia <hwnd|pid|owner> [--summary]
+win.ps1 uiaread <hwnd|pid|owner> [过滤词 | --id AutomationId] [--summary]
 win.ps1 idle
 win.ps1 frontmost
 win.ps1 restore | minimize <hwnd|pid|owner>   # 用户要求时还原/最小化窗口；SW_SHOW*NOACTIVE 不抢前台；隐藏窗口拒绝
@@ -281,7 +288,7 @@ node "$SKILL_DIR/scripts/cdp.js" <port> eval-unsafe <target> <表达式> --allow
 - 不自动提权、不关闭 UAC/Defender/SmartScreen、不注入进程、不强杀 app。
 - CDP 调试端口暴露的是强能力；只绑定本机、只针对用户授权的 app，用完关闭实例。
 
-维护交接见 [`HANDOFF.md`](HANDOFF.md)。详细原理见 [`references/控制面详解.md`](references/控制面详解.md)，故障与权限见 [`references/权限与故障.md`](references/权限与故障.md)，证据落盘见 [`references/取证规范.md`](references/取证规范.md)，单 app 易腐经验与跨 app 共性结论见 [`references/app档案.md`](references/app档案.md)，翻车过程与工具为何如此见 [`references/踩坑实录.md`](references/踩坑实录.md)，与原 Mac 版的差距和优先级见 [`references/与mac版差距.md`](references/与mac版差距.md)。
+项目完成度、已实现功能、测试证据和 v1.0 路线见 [`PROJECT_STATUS.md`](PROJECT_STATUS.md)，未来实施阶段、任务拆分、工期和验收门见 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)，维护交接见 [`HANDOFF.md`](HANDOFF.md)。详细原理见 [`references/控制面详解.md`](references/控制面详解.md)，故障与权限见 [`references/权限与故障.md`](references/权限与故障.md)，证据落盘见 [`references/取证规范.md`](references/取证规范.md)，单 app 易腐经验与跨 app 共性结论见 [`references/app档案.md`](references/app档案.md)，翻车过程与工具为何如此见 [`references/踩坑实录.md`](references/踩坑实录.md)，与原 Mac 版的差距和优先级见 [`references/与mac版差距.md`](references/与mac版差距.md)。
 
 ## 仓库结构
 
@@ -289,6 +296,8 @@ node "$SKILL_DIR/scripts/cdp.js" <port> eval-unsafe <target> <表达式> --allow
 win-use-master/
 ├── SKILL.md
 ├── README.md
+├── PROJECT_STATUS.md     # 当前完成度、功能矩阵、验证证据与分阶段路线
+├── IMPLEMENTATION_PLAN.md # 未来任务拆分、依赖、工期、质量门和发布节奏
 ├── HANDOFF.md            # 维护交接、测试矩阵、发布流程与当前待办
 ├── cdp.js                # 兼容旧入口，转发到 scripts/cdp.js
 ├── assets/
@@ -307,12 +316,19 @@ win-use-master/
 │   ├── cdp-ownership.ps1 # 验证端口 owner 错配拒绝/正确接受
 │   ├── cdp-fixture.js    # CDP 端口归属拒绝测试的本地 HTTP fixture
 │   ├── cdp-action-receipt.ps1 # 临时无头 Edge 上的 CDP 动作/脱敏/失败/超时收据回归
+│   ├── parse-contract.ps1 # 统一检查仓库内 PowerShell 与 JavaScript 语法
+│   ├── ci-contract.ps1   # CI 只读权限、action 固定版本和 Node 矩阵契约
+│   ├── run-tests.ps1      # Contract/Desktop/Coordinate/Profiles 分层调度与 JSON 摘要
+│   ├── test-runner-contract.ps1 # 调度、显式 profile、报告隐私和覆盖保护契约
 │   ├── static-contract.ps1 # 发布文件、规则、链接、SVG 与 Skill 体积契约
+│   ├── uia-read-contract.ps1 # 无桌面：精确 ID 预筛选、唯一性、正文隔离与参数契约
+│   ├── window-state-contract.ps1 # 无桌面：前台迁移与“新激活”判定契约
 │   ├── sibling-fixture.ps1 # 同进程壳窗口/渲染窗口 fixture
 │   ├── capture-recovery.ps1 # 截图 sibling recovery 与收据回归
 │   ├── uia-timeout.ps1   # UIA worker 挂起、终止与 unknown 收据回归
 │   ├── calculator-profile.ps1 # 可选：真实 Windows 计算器档案回归
 │   ├── notepad-profile.ps1 # 可选：真实记事本 11 Document 可逆写档案回归
+│   ├── settings-profile.ps1 # 可选：Windows 11 设置隔离只读档案回归
 │   ├── workbuddy-cdp-profile.ps1 # 可选：用户授权的 WorkBuddy CDP 实例上做零焦点可逆写
 │   ├── excel-com-profile.ps1 # 可选：Excel 私有 COM 实例写表→读回→另存→不经 Excel 验证文件
 │   ├── wps-et-com-profile.ps1 # 可选：WPS 表格 KET.Application 私有实例，同任务 + 第二实例重开读回
@@ -334,17 +350,34 @@ win-use-master/
 ## 开发自检
 
 ```powershell
+# 查看全部测试，不执行
+pwsh -NoProfile -File "$SKILL_DIR\tests\run-tests.ps1" -List
+# 无桌面层：9 项解析、构建、静态、CI、UIA、窗口状态和 CDP 契约
+pwsh -NoProfile -File "$SKILL_DIR\tests\run-tests.ps1" -Tier Contract
+# 只复跑指定项；多个 ID 使用逗号连接
+pwsh -NoProfile -File "$SKILL_DIR\tests\run-tests.ps1" -Tier Contract -TestId parse,static
+# 有交互桌面，可能执行受安全闸保护的输入；运行期间不要操作键鼠
+pwsh -NoProfile -File "$SKILL_DIR\tests\run-tests.ps1" -Tier Desktop
+# 发布级 L2，坐标输入必须实际执行而非跳过
+pwsh -NoProfile -File "$SKILL_DIR\tests\run-tests.ps1" -Tier Coordinate
+# 真实 app 必须显式选择；先用 -DryRun 检查计划
+pwsh -NoProfile -File "$SKILL_DIR\tests\run-tests.ps1" -Tier Profiles -Profile calculator,settings -DryRun
+
+# 仍可单独运行原始测试
 pwsh -NoProfile -File "$SKILL_DIR\tests\smoke.ps1"
 # 发布级回归：要求 L2 实际输入；运行期间不要操作键鼠
 pwsh -NoProfile -File "$SKILL_DIR\tests\smoke.ps1" -RequireCoordinate
 pwsh -NoProfile -File "$SKILL_DIR\tests\static-contract.ps1"
+pwsh -NoProfile -File "$SKILL_DIR\tests\uia-read-contract.ps1"
+pwsh -NoProfile -File "$SKILL_DIR\tests\window-state-contract.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\cdp-ownership.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\cdp-action-receipt.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\capture-recovery.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\uia-timeout.ps1"
-# 可选真实 app 测试：仅在计算器 / 记事本原本未打开时运行
+# 可选真实 app 测试：仅在对应 app 原本未运行时启动隔离实例
 pwsh -NoProfile -File "$SKILL_DIR\tests\calculator-profile.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\notepad-profile.ps1"
+pwsh -NoProfile -File "$SKILL_DIR\tests\settings-profile.ps1"
 # 可选 Chromium/CDP 档案：需用户先 open <WorkBuddyAI.exe> --cdp 9333 --background 授权实例；测试不启停 app
 pwsh -NoProfile -File "$SKILL_DIR\tests\workbuddy-cdp-profile.ps1" -Port 9333
 # 可选 L0 COM 档案：各自新起私有自动化实例，不碰用户已打开的 Excel / WPS
@@ -352,7 +385,9 @@ pwsh -NoProfile -File "$SKILL_DIR\tests\excel-com-profile.ps1"
 pwsh -NoProfile -File "$SKILL_DIR\tests\wps-et-com-profile.ps1"
 ```
 
-首个烟测会打开一个无外部副作用的本地 WinForms 测试窗，依次验证编译、只读 probe 的 PID 限定、后台截图与收据、`see`/UIA map、隔离 UIA worker、`uiaread` 静态文本与动作副作用回读、`ValuePattern`、`InvokePattern`、动作上限和安全闸预演，并在用户已空闲时验证短暂借前台的坐标输入、真实焦点占用时长与自身输入尾迹排除；用户正操作电脑时默认明确跳过 L2。发布前用 `-RequireCoordinate` 要求 L2 必须通过，它需要活动交互桌面且运行期间不要操作键鼠。若 Windows Foreground Lock 拒绝切前台，退出码 `2` 是安全拒绝，不应强行绕过。CDP owner 测试使用隐藏 HTTP fixture 验证错实例端口拒绝；动作收据测试使用本工具自己启动的临时无头 Edge，验证真实 `text/click/press/act`、脱敏、确定失败和请求/脚本截止时间的 `unknown`，随后只清理该测试 profile 对应进程；截图恢复测试使用两个同进程同位置窗口验证壳/渲染 sibling 选择与收据；UIA 超时测试确定性挂起 worker，验证父进程会终止它并把写结果标成 unknown。计算器测试是可选的机器档案回归：拒绝复用已打开的计算器，验证 AUMID 启动、UWP 宿主窗口、中文 UIA、`1+2=3` 回读，最后恢复 0 并正常关闭。记事本测试同样可选：拒绝复用运行中的记事本，也拒绝向恢复出的会话写入；验证 `see` 位置参数路径、空白文档的截图诊断、Document `ValuePattern` 写入与状态栏字符数、标签“已修改/未修改”两种指示器回读，再清空并关闭——记事本 11 关闭已修改标签不会提示而是留到下次会话，所以失败路径也会先清空。WorkBuddy 测试是唯一的真实 Chromium 写档案：它不启动、不重启、不关闭 app，只在用户已用 `--cdp` 启动授权实例、端口归属校验通过、输入区没有草稿时运行；`insert` 后要求发送键由禁用变可用，`SelectAll`+`Backspace` 撤回后要求发送键回到禁用、占位符重现，收据与终端差分都不得含输入正文。它从不按 Enter 或点发送。Excel 与 WPS 表格测试走 L0 COM：`New-Object -ComObject` 总是新起私有自动化进程，测试只对该进程写入、另存到临时目录并 Quit，再不经宿主 app 从 xlsx 的 XML 里核对 `SUM(D2:D4)=3640`；它们同时核对 exe 身份（WPS 在 32 位视图抢注了 `Excel.Application.12`）、Excel 必须先建工作簿再设 `Visible`、以及全部 COM 引用释放后进程确实退出。
+`run-tests.ps1` 默认只运行无桌面的 `Contract` 层。`Profiles` 不会隐式选择全部应用，必须显式给出 `-Profile` 或 `-Profile all`；`-TestId` 只能选择当前层内的测试。可用 `-ReportPath <file.json>` 生成 `win-use-master/test-report-v1`，报告只保存环境版本、结果、耗时、输出行数和 SHA-256，不嵌入测试原始日志；已存在文件默认拒绝覆盖，只有明确的 `-ForceReport` 才覆盖该报告。
+
+首个烟测会打开一个无外部副作用的本地 WinForms 测试窗，依次验证编译、只读 probe 的 PID 限定、后台截图与收据、`see`/UIA map、`see/uia/uiaread --summary` 终端脱敏、隔离 UIA worker、定向 `uiaread` 静态文本与动作副作用回读、`ValuePattern`、`InvokePattern`、动作上限和安全闸预演，并在用户已空闲时验证短暂借前台的坐标输入、真实焦点占用时长与自身输入尾迹排除；用户正操作电脑时默认明确跳过 L2。发布前用 `-RequireCoordinate` 要求 L2 必须通过，它需要活动交互桌面且运行期间不要操作键鼠。若 Windows Foreground Lock 拒绝切前台，退出码 `2` 是安全拒绝，不应强行绕过。CDP owner 测试使用隐藏 HTTP fixture 验证错实例端口拒绝；动作收据测试使用本工具自己启动的临时无头 Edge，验证真实 `text/click/press/act`、脱敏、确定失败和请求/脚本截止时间的 `unknown`，随后只清理该测试 profile 对应进程；截图恢复测试使用两个同进程同位置窗口验证壳/渲染 sibling 选择与收据；UIA 超时测试确定性挂起 worker，验证父进程会终止它并把写结果标成 unknown。计算器测试是可选的机器档案回归：拒绝复用已打开的计算器，验证 AUMID 启动、UWP 宿主窗口、中文 UIA、`1+2=3` 回读，最后恢复 0 并正常关闭。记事本测试同样可选：拒绝复用运行中的记事本，也拒绝向恢复出的会话写入；验证 `see` 位置参数路径、空白文档的截图诊断、Document `ValuePattern` 写入与状态栏字符数、标签“已修改/未修改”两种指示器回读，再清空并关闭——记事本 11 关闭已修改标签不会提示而是留到下次会话，所以失败路径也会先清空。Windows 设置测试只在 `SystemSettings` 未运行时启动：不调用任何控件、不写搜索框，以三个摘要命令避免 UIA 名称进入终端，只核对 AUMID 宿主关系、后台截图收据和经过 AutomationId 过滤的 UIA 标题/搜索框，然后关闭精确窗口并删除可能含账号或设备名的临时证据。WorkBuddy 测试是唯一的真实 Chromium 写档案：它不启动、不重启、不关闭 app，只在用户已用 `--cdp` 启动授权实例、端口归属校验通过、输入区没有草稿时运行；`insert` 后要求发送键由禁用变可用，`SelectAll`+`Backspace` 撤回后要求发送键回到禁用、占位符重现，收据与终端差分都不得含输入正文。它从不按 Enter 或点发送。Excel 与 WPS 表格测试走 L0 COM：`New-Object -ComObject` 总是新起私有自动化进程，测试只对该进程写入、另存到临时目录并 Quit，再不经宿主 app 从 xlsx 的 XML 里核对 `SUM(D2:D4)=3640`；它们同时核对 exe 身份（WPS 在 32 位视图抢注了 `Excel.Application.12`）、Excel 必须先建工作簿再设 `Visible`、以及全部 COM 引用释放后进程确实退出。
 
 ## 许可证
 

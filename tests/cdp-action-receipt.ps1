@@ -242,6 +242,19 @@ try {
         throw "act 总截止时间约定失败：exit=$deadlineExit timedOut=$($deadlineReceipt.result.timedOut) effect=$($deadlineReceipt.verification.effect) steps=$($deadlineReceipt.action.stepsCompleted) output=$($deadlineOut -join ' | ')"
     }
 
+    # A browser may rebuild its CDP listener process during a long deadline test.
+    # The old owner-bound session must then fail closed. Explicitly authorize the
+    # current owner/target again before mutating the manifest so each following
+    # assertion reaches the guard it intends to test.
+    $reauthorize = @(& pwsh -NoProfile -File $win open $edgeExe --cdp $port 2>&1)
+    if ($LASTEXITCODE -ne 0 -or (($reauthorize -join "`n") -notmatch '写授权有效 30 分钟')) {
+        throw "长时测试后无法重新绑定当前 CDP owner：exit=$LASTEXITCODE output=$($reauthorize -join ' | ')"
+    }
+    $refreshedSession = Get-Content -LiteralPath $sessionPath -Raw | ConvertFrom-Json
+    if ($refreshedSession.targetIds -notcontains $targetId) {
+        throw "重新授权后的 target 集合不再包含测试页：$($refreshedSession.targetIds -join ',')"
+    }
+
     $beforeGuardOut = @(& $node $cdp $port inspect $targetId '#i' 2>&1)
     $beforeGuard = [string]($beforeGuardOut | Where-Object { [string]$_ -match '^\{' } | Select-Object -Last 1) | ConvertFrom-Json
     $sessionRaw = Get-Content -LiteralPath $sessionPath -Raw
@@ -292,19 +305,40 @@ try {
     Write-Output "PASS: CDP bound-session, safe/unsafe eval and action receipts text/click/press/act/error/request-timeout/act-deadline, redacted input+CSS, timeout=$([Math]::Round($clock.Elapsed.TotalSeconds,2))s port=$port"
 } finally {
     $env:WIN_USE_MASTER_CDP_SESSION = $oldSession
-    # 只终止命令行中带本测试唯一 profile 路径的 Edge 进程。
+    # Only stop Edge processes whose command line contains this run's unique
+    # profile. Child processes can keep files locked briefly after the browser
+    # process exits, so keep re-querying this exact profile before deletion.
+    $processDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    do {
+        $owned = @(Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profile) })
+        foreach ($proc in ($owned | Sort-Object ProcessId -Descending)) {
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $owned.Count) { break }
+        Start-Sleep -Milliseconds 150
+    } while ([DateTime]::UtcNow -lt $processDeadline)
     $owned = @(Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profile) })
-    foreach ($proc in ($owned | Sort-Object ProcessId -Descending)) {
-        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
-    }
-    if ($edge -and -not $edge.HasExited) { Stop-Process -Id $edge.Id -Force -ErrorAction SilentlyContinue }
+    if ($owned.Count) { throw "本测试的 Edge 进程在 8 秒内没有退出：$(@($owned.ProcessId) -join ',')" }
 
     $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     $resolvedTemp = [IO.Path]::GetFullPath($tempRoot)
     if ($resolvedTemp.StartsWith($tempBase, [StringComparison]::OrdinalIgnoreCase) -and
         [IO.Path]::GetFileName($resolvedTemp).StartsWith('win-use-master-cdp-receipt-test-', [StringComparison]::Ordinal)) {
-        Remove-Item -LiteralPath $resolvedTemp -Recurse -Force -ErrorAction SilentlyContinue
+        $cleanupError = $null
+        for ($attempt = 0; $attempt -lt 8 -and (Test-Path -LiteralPath $resolvedTemp); $attempt++) {
+            try {
+                Remove-Item -LiteralPath $resolvedTemp -Recurse -Force -ErrorAction Stop
+                $cleanupError = $null
+            } catch {
+                $cleanupError = $_.Exception.Message
+                Start-Sleep -Milliseconds 250
+            }
+        }
+        if (Test-Path -LiteralPath $resolvedTemp) {
+            throw "本测试的临时 profile 清理失败：$cleanupError"
+        }
     } else {
         throw "拒绝清理未验证的临时目录：$resolvedTemp"
     }

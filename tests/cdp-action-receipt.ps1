@@ -81,7 +81,7 @@ try {
 
     # #ce mimics Slate/ProseMirror composers: a contenteditable div with
     # role=textbox, whose collected kind is div/textbox rather than div/editable.
-    $setupJs = "document.body.innerHTML='<input id=i value=abc><button id=b onclick=`"this.disabled=true`">Go</button><button id=b2 onclick=`"this.remove()`">Gone</button><button id=danger onclick=`"document.body.dataset.dangerClicked=1`">发送</button><button id=sendButton onclick=`"document.body.dataset.identifierRan=1`">Go</button><form onsubmit=`"document.body.dataset.submitRan=1;return false`"><button id=implicit></button></form><div id=ce role=textbox contenteditable=true>seed</div>'; 'ready'"
+    $setupJs = "document.title='private-marker-cdp-inspect'; document.body.innerHTML='<input id=i value=abc><button id=b onclick=`"this.disabled=true`">Go</button><button id=b2 onclick=`"this.remove()`">Gone</button><button id=danger onclick=`"document.body.dataset.dangerClicked=1`">发送</button><button id=sendButton onclick=`"document.body.dataset.identifierRan=1`">Go</button><form onsubmit=`"document.body.dataset.submitRan=1;return false`"><button id=implicit></button></form><div id=ce role=textbox contenteditable=true>seed</div>'; 'ready'"
     $setup = @(& $node $cdp $port eval-unsafe $targetId $setupJs --allow-side-effects --receipt $receipts.Setup 2>&1)
     if ($LASTEXITCODE -ne 0 -or (($setup | Out-String) -notmatch 'ready')) {
         $currentTargets = @(& $node $cdp $port list 2>&1)
@@ -96,6 +96,34 @@ try {
         $setupRaw.Contains($setupJs)) {
         throw 'eval-unsafe 没有形成脱敏的显式副作用回执。'
     }
+
+    $inspectSummaryOut = @(& $node $cdp $port inspect $targetId '#i' --json --summary 2>&1)
+    $inspectSummaryExit = $LASTEXITCODE
+    $inspectSummaryRaw = $inspectSummaryOut -join "`n"
+    try { $inspectSummary = $inspectSummaryRaw | ConvertFrom-Json } catch { throw "inspect summary 不是单一 JSON 文档：$inspectSummaryRaw" }
+    if ($inspectSummaryExit -ne 0 -or $inspectSummary.schema -ne 'win-use-master/cdp-inspect-result-v1' -or
+        $inspectSummary.status -ne 'found' -or $inspectSummary.element.textLength -ne 3 -or
+        $null -ne $inspectSummary.target.title -or $null -ne $inspectSummary.target.url -or
+        $inspectSummaryRaw.Contains('private-marker') -or $inspectSummaryRaw.Contains('#i')) {
+        throw "inspect summary schema、状态或脱敏不符合约定：exit=$inspectSummaryExit output=$inspectSummaryRaw"
+    }
+    $inspectFullOut = @(& $node $cdp $port inspect $targetId '#i' --json 2>&1)
+    $inspectFullExit = $LASTEXITCODE
+    $inspectFullRaw = $inspectFullOut -join "`n"
+    $inspectFull = $inspectFullRaw | ConvertFrom-Json
+    if ($inspectFullExit -ne 0 -or $inspectFull.target.title -ne 'private-marker-cdp-inspect' -or
+        $inspectFull.target.url -ne 'about:blank' -or $inspectFullRaw.Contains('#i')) {
+        throw "inspect full JSON 丢失安全目标身份或复制了 selector：$inspectFullRaw"
+    }
+    $inspectTypo = @(& $node $cdp $port inspect $targetId '#i' --json --summmary 2>&1)
+    if ($LASTEXITCODE -ne 2 -or (($inspectTypo -join "`n").Contains('private-marker-cdp-inspect'))) {
+        throw "inspect 拼错 summary 没有在输出 target 前失败关闭：exit=$LASTEXITCODE output=$($inspectTypo -join ' | ')"
+    }
+    $inspectMissing = @(& $node $cdp $port inspect $targetId '#private-marker-missing-selector' --json --summary 2>&1)
+    if ($LASTEXITCODE -ne 1 -or (($inspectMissing -join "`n").Contains('private-marker-missing-selector'))) {
+        throw "inspect summary 未命中错误泄露了 CSS selector：exit=$LASTEXITCODE output=$($inspectMissing -join ' | ')"
+    }
+    Write-Output 'machine-output: CDP inspect full/summary schemas and fail-closed options PASS'
 
     $blockedEval = @(& $node $cdp $port eval $targetId "document.body.dataset.mustNotExist='blocked'" 2>&1)
     if ($LASTEXITCODE -ne 2 -or (($blockedEval -join "`n") -notmatch '只允许浏览器能证明无副作用')) {
@@ -246,18 +274,22 @@ try {
     # The old owner-bound session must then fail closed. Explicitly authorize the
     # current owner/target again before mutating the manifest so each following
     # assertion reaches the guard it intends to test.
-    $reauthorize = @(& pwsh -NoProfile -File $win open $edgeExe --cdp $port 2>&1)
-    if ($LASTEXITCODE -ne 0 -or (($reauthorize -join "`n") -notmatch '写授权有效 30 分钟')) {
-        throw "长时测试后无法重新绑定当前 CDP owner：exit=$LASTEXITCODE output=$($reauthorize -join ' | ')"
-    }
-    $refreshedSession = Get-Content -LiteralPath $sessionPath -Raw | ConvertFrom-Json
-    if ($refreshedSession.targetIds -notcontains $targetId) {
-        throw "重新授权后的 target 集合不再包含测试页：$($refreshedSession.targetIds -join ',')"
+    function Get-FreshGuardSession([string] $GuardName) {
+        $reauthorize = @(& pwsh -NoProfile -File $win open $edgeExe --cdp $port 2>&1)
+        if ($LASTEXITCODE -ne 0 -or (($reauthorize -join "`n") -notmatch '写授权有效 30 分钟')) {
+            throw "$GuardName 前无法重新绑定当前 CDP owner：exit=$LASTEXITCODE output=$($reauthorize -join ' | ')"
+        }
+        $freshRaw = Get-Content -LiteralPath $sessionPath -Raw
+        $fresh = $freshRaw | ConvertFrom-Json
+        if ($fresh.targetIds -notcontains $targetId) {
+            throw "$GuardName 前重新授权的 target 集合不再包含测试页：$($fresh.targetIds -join ',')"
+        }
+        return $freshRaw
     }
 
+    $sessionRaw = Get-FreshGuardSession 'owner mismatch guard'
     $beforeGuardOut = @(& $node $cdp $port inspect $targetId '#i' 2>&1)
     $beforeGuard = [string]($beforeGuardOut | Where-Object { [string]$_ -match '^\{' } | Select-Object -Last 1) | ConvertFrom-Json
-    $sessionRaw = Get-Content -LiteralPath $sessionPath -Raw
     try {
         $wrongOwnerSession = $sessionRaw | ConvertFrom-Json
         $wrongOwnerSession.owners[0].startTimeUtc = '2000-01-01T00:00:00.0000000Z'
@@ -268,6 +300,7 @@ try {
         }
     } finally { [IO.File]::WriteAllText($sessionPath, $sessionRaw, [Text.UTF8Encoding]::new($false)) }
 
+    $sessionRaw = Get-FreshGuardSession 'multi-target auto guard'
     try {
         $multiTargetSession = $sessionRaw | ConvertFrom-Json
         $multiTargetSession.targetIds = @($multiTargetSession.targetIds) + 'additional-authorized-page'
@@ -278,6 +311,7 @@ try {
         }
     } finally { [IO.File]::WriteAllText($sessionPath, $sessionRaw, [Text.UTF8Encoding]::new($false)) }
 
+    $sessionRaw = Get-FreshGuardSession 'target mismatch guard'
     try {
         $wrongTargetSession = $sessionRaw | ConvertFrom-Json
         $wrongTargetSession.targetIds = @('not-the-current-target')
@@ -288,6 +322,7 @@ try {
         }
     } finally { [IO.File]::WriteAllText($sessionPath, $sessionRaw, [Text.UTF8Encoding]::new($false)) }
 
+    $sessionRaw = Get-FreshGuardSession 'expiry guard'
     try {
         $expiredSession = $sessionRaw | ConvertFrom-Json
         $expiredSession.expiresAt = '2000-01-01T00:00:00.0000000Z'

@@ -44,8 +44,13 @@ function New-TestDefinition(
 $catalog = @(
     New-TestDefinition 'parse' 'Contract' 'tests/parse-contract.ps1' @() $false $false 30
     New-TestDefinition 'build' 'Contract' 'scripts/build.ps1' @() $false $false 60
+    New-TestDefinition 'doctor' 'Contract' 'tests/doctor-contract.ps1' @() $false $false 45
     New-TestDefinition 'static' 'Contract' 'tests/static-contract.ps1' @() $false $false 30
     New-TestDefinition 'ci' 'Contract' 'tests/ci-contract.ps1' @() $false $false 30
+    New-TestDefinition 'json-output' 'Contract' 'tests/json-output-contract.ps1' @() $false $false 45
+    New-TestDefinition 'capability-cache' 'Contract' 'tests/capability-cache-contract.ps1' @() $false $false 45
+    New-TestDefinition 'cleanup' 'Contract' 'tests/cleanup-contract.ps1' @() $false $false 30
+    New-TestDefinition 'benchmark' 'Contract' 'tests/benchmark-contract.ps1' @() $false $false 75
     New-TestDefinition 'uia-read' 'Contract' 'tests/uia-read-contract.ps1' @() $false $false 45
     New-TestDefinition 'window-state' 'Contract' 'tests/window-state-contract.ps1' @() $false $false 30
     New-TestDefinition 'cdp-ownership' 'Contract' 'tests/cdp-ownership.ps1' @() $false $false 45

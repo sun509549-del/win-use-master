@@ -12,12 +12,12 @@ foreach ($file in $powerShellFiles) {
     $tokens = $null
     $errors = $null
     [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
-    foreach ($error in $errors) { $parseErrors.Add($error) }
+    foreach ($parseError in $errors) { $parseErrors.Add($parseError) }
 }
 
 if ($parseErrors.Count) {
-    foreach ($error in $parseErrors) {
-        Write-Error "$($error.Extent.File):$($error.Extent.StartLineNumber): $($error.Message)"
+    foreach ($parseError in $parseErrors) {
+        Write-Error "$($parseError.Extent.File):$($parseError.Extent.StartLineNumber): $($parseError.Message)"
     }
     throw "PowerShell parse failed with $($parseErrors.Count) error(s)."
 }

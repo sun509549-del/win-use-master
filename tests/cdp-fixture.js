@@ -12,8 +12,9 @@ const server = http.createServer((request, response) => {
   if (request.url === '/json/list') {
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify([{
-      id: 'fixture-page', type: 'page', title: 'win-use-master owner fixture',
-      url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/fixture-page`,
+      id: 'fixture-page', type: 'page', title: 'private-marker-cdp-title',
+      url: 'https://example.invalid/probe?probe=private-query-marker#private-fragment',
+      webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/fixture-page`,
     }]));
     return;
   }

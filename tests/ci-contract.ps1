@@ -18,6 +18,11 @@ Assert-Contract ($workflow -match '(?s)strategy:\s*\r?\n\s+fail-fast:\s*false\s*
 Assert-Contract ([regex]::Matches($workflow, '(?m)^\s+package-manager-cache:\s*false\s*$').Count -ge 2) '无依赖安装的 job 必须关闭 setup-node 自动包缓存'
 Assert-Contract ($workflow -match 'CDP contracts \(Node \$\{\{ matrix\.node-version \}\}\)') 'CDP 矩阵 job 应在名称中显示 Node 版本'
 Assert-Contract ($workflow -match 'tests/ci-contract\.ps1') '核心 job 必须执行 CI 自身契约'
+Assert-Contract ($workflow -match 'tests/doctor-contract\.ps1') '核心 job 必须验证只读 doctor 的 fixture、隐私与零副作用'
+Assert-Contract ($workflow -match 'tests/json-output-contract\.ps1') '核心 job 必须验证机器可读 schema、unknown 与摘要隐私'
+Assert-Contract ($workflow -match 'tests/capability-cache-contract\.ps1') '核心 job 必须验证建议性能力缓存的隐私、失效与非授权边界'
+Assert-Contract ($workflow -match 'tests/cleanup-contract\.ps1') '核心 job 必须验证 cleanup dry-run 的边界、零写入与 apply 拒绝'
+Assert-Contract ($workflow -match 'tests/benchmark-contract\.ps1') '核心 job 必须验证聚合性能基线、隐私和零写入模式'
 Assert-Contract ($workflow -match 'tests/uia-timeout\.ps1') '核心 job 必须验证 UIA 截止时间和 unknown 语义'
 
 Write-Output 'PASS: CI read-only permissions, pinned actions, Node 22/24 CDP matrix, cache and required contracts'

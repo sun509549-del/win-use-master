@@ -1,0 +1,13 @@
+{
+  "helper": {
+    "sourceExists": true,
+    "dllExists": true,
+    "stale": true,
+    "loadable": false,
+    "loadError": "not-attempted",
+    "compilerAvailable": true,
+    "ready": false,
+    "status": "stale"
+  },
+  "desktop": { "inputDesktop": "unknown", "lockedOrSecure": null, "integrityRid": 0, "integrityName": "unknown" }
+}

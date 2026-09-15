@@ -9,12 +9,18 @@
 #   pwsh -File .\scripts\probe.ps1 "App display name"
 #   pwsh -File .\scripts\probe.ps1 process-name
 #   pwsh -File .\scripts\probe.ps1 "C:\Path\App.exe"
+#   pwsh -File .\scripts\probe.ps1 process-name --json --summary
+#   pwsh -File .\scripts\probe.ps1 process-name --no-cache
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0, ValueFromRemainingArguments = $true)]
     [ValidateNotNullOrEmpty()]
-    [string[]] $App
+    [string[]] $App,
+    [switch] $Json,
+    [switch] $Summary,
+    [Alias('no-cache')]
+    [switch] $NoCache
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +29,12 @@ $ScriptDir = $PSScriptRoot
 $ToolRoot = Split-Path -Parent $ScriptDir
 $script:Warnings = [System.Collections.Generic.List[string]]::new()
 $script:Candidates = [System.Collections.Generic.List[object]]::new()
+
+$unknownOptions = @($App | Where-Object { [string]$_ -like '--*' })
+if ($unknownOptions.Count) {
+    [Console]::Error.WriteLine('probe 只支持一个应用查询以及 --json/--summary/--no-cache；未知选项已拒绝。')
+    exit 2
+}
 
 function Write-Section([string] $Title) {
     Write-Output ''
@@ -33,6 +45,187 @@ function Add-Warning([string] $Text) {
     if ($Text -and -not $script:Warnings.Contains($Text)) {
         $script:Warnings.Add($Text)
     }
+}
+
+# Cache loading is isolated to this read-only probe. Write paths do not import
+# this module, and --no-cache / WIN_USE_MASTER_CAPABILITY_CACHE=0 avoid reads.
+$script:CapabilityCacheCoreLoaded = $false
+if (-not $NoCache -and [string]$env:WIN_USE_MASTER_CAPABILITY_CACHE -ne '0') {
+    $cacheCore = Join-Path $ScriptDir 'capability-cache-core.ps1'
+    try {
+        if (-not (Test-Path -LiteralPath $cacheCore -PathType Leaf)) { throw 'missing' }
+        . $cacheCore
+        $script:CapabilityCacheCoreLoaded = $true
+    }
+    catch { Add-Warning '建议性能力缓存模块不可用；本次继续执行实时只读探测。' }
+}
+
+function New-ProbeCacheState([string] $Status, [bool] $Used = $false) {
+    return [pscustomobject][ordered]@{
+        status = $Status; used = $Used; trustedForAuthorization = $false
+        observedAt = $null; expiresAt = $null; advisoryOrder = @(); observations = $null
+    }
+}
+
+function ConvertTo-ProbeWindowRecord($Window) {
+    $state = if ($Window.Iconic) { 'minimized' } elseif ($Window.Cloaked) { 'cloaked' } elseif (-not $Window.Visible) { 'hidden' } else { 'current' }
+    return [pscustomobject][ordered]@{
+        hwnd = ('0x{0:X}' -f [long]$Window.Hwnd)
+        pid = [int]$Window.Pid
+        owner = [string]$Window.Owner
+        title = [string]$Window.Title
+        className = [string]$Window.Cls
+        state = $state
+        rect = [pscustomobject][ordered]@{ x = [int]$Window.L; y = [int]$Window.T; width = [int]$Window.W; height = [int]$Window.H }
+        flags = [pscustomobject][ordered]@{
+            visible = [bool]$Window.Visible; minimized = [bool]$Window.Iconic
+            cloaked = [bool]$Window.Cloaked; toolWindow = [bool]$Window.Tool
+        }
+    }
+}
+
+function New-ProbeReport([System.Collections.IDictionary] $Facts, [bool] $Found, [bool] $Summary) {
+    $warnings = @($Facts.Warnings)
+    $cache = if ($Facts.Contains('Cache')) { $Facts.Cache } else { New-ProbeCacheState 'not-checked' }
+    if (-not $Found) {
+        return [pscustomobject][ordered]@{
+            schema = 'win-use-master/probe-report-v1'
+            observedAt = [DateTimeOffset]::Now.ToString('o')
+            status = 'not-found'
+            privacy = [pscustomobject][ordered]@{
+                mode = $(if ($Summary) { 'summary' } else { 'full' })
+                collection = 'unchanged'; queryValueIncluded = $false
+                redactedFields = @(if ($Summary) { 'warnings.items' })
+            }
+            query = [pscustomobject][ordered]@{ provided = $true; valueIncluded = $false }
+            target = $null
+            runtime = [pscustomobject][ordered]@{ status = 'unknown'; primaryPids = @(); relatedPids = @(); processCount = 0; processes = @() }
+            frameworks = [pscustomobject][ordered]@{ detected = $false; families = @(); signals = @() }
+            interfaces = [pscustomobject][ordered]@{
+                cdp = [pscustomobject][ordered]@{ status = 'unknown'; endpoints = @() }
+                protocols = [pscustomobject][ordered]@{ status = 'unknown'; count = 0; items = @() }
+                com = [pscustomobject][ordered]@{ status = 'unknown'; serverCount = 0; typeLibraryCount = 0; servers = @(); typeLibraries = @() }
+            }
+            windows = [pscustomobject][ordered]@{ status = 'unknown'; count = 0; visibleCount = 0; items = @() }
+            uia = [pscustomobject][ordered]@{ status = 'unknown'; total = $null; editable = $null; actionable = $null; focusable = $null; offscreen = $null }
+            capabilities = [pscustomobject][ordered]@{ l0 = 'unknown'; l1 = 'unknown'; l2 = 'unknown'; l3 = 'unknown' }
+            cache = $cache
+            warnings = [pscustomobject][ordered]@{ count = $warnings.Count; itemsIncluded = -not $Summary; items = @(if (-not $Summary) { $warnings }) }
+        }
+    }
+
+    $processes = @($Facts.Processes)
+    $signals = @($Facts.Signals)
+    $windows = @($Facts.Windows)
+    $cdpEndpoints = @($Facts.CdpResults | Where-Object { $_.Probe -and $_.Probe.IsCdp } | ForEach-Object {
+        [pscustomobject][ordered]@{
+            address = [string]$_.PortInfo.Address; port = [int]$_.PortInfo.Port; pid = [int]$_.PortInfo.Pid
+            httpStatus = $(if ($_.Probe.HttpStatus) { [int]$_.Probe.HttpStatus } else { $null })
+            browser = $(if ($Summary) { $null } else { [string]$_.Probe.Browser })
+            webSocketDebuggerUrl = $(if ($Summary -or -not $_.Probe.WebSocket) { $null } else { [string]$_.Probe.WebSocket })
+        }
+    })
+    $families = @($signals | Group-Object Family | Sort-Object Name | ForEach-Object {
+        [pscustomobject][ordered]@{
+            name = [string]$_.Name
+            count = [int]$_.Count
+            confidence = $(if (@($_.Group | Where-Object Strength -EQ 'strong').Count) { 'strong' } else { 'supporting' })
+        }
+    })
+    $uia = $Facts.Uia
+    $uiaStatus = if ($processes.Count -eq 0) { 'unknown' } elseif ($uia.TimedOut) { 'unknown' } elseif (-not $uia.Available) { 'unavailable' } else { 'available' }
+    $target = $Facts.Target
+    return [pscustomobject][ordered]@{
+        schema = 'win-use-master/probe-report-v1'
+        observedAt = [DateTimeOffset]::Now.ToString('o')
+        status = 'resolved'
+        privacy = [pscustomobject][ordered]@{
+            mode = $(if ($Summary) { 'summary' } else { 'full' })
+            collection = 'unchanged'; queryValueIncluded = $false
+            redactedFields = @(if ($Summary) {
+                'target.displayName'; 'target.installRoot'; 'target.executablePath'; 'runtime.processes'
+                'frameworks.signals'; 'interfaces.cdp.endpoints[].browser'; 'interfaces.cdp.endpoints[].webSocketDebuggerUrl'
+                'interfaces.protocols.items'; 'interfaces.com.servers'; 'interfaces.com.typeLibraries'; 'windows.items'; 'warnings.items'
+            })
+        }
+        query = [pscustomobject][ordered]@{ provided = $true; valueIncluded = $false }
+        target = [pscustomobject][ordered]@{
+            source = [string]$target.Source
+            displayName = $(if ($Summary) { $null } else { [string]$target.DisplayName })
+            installRoot = $(if ($Summary) { $null } else { $Facts.InstallRoot })
+            executablePath = $(if ($Summary) { $null } else { $Facts.ExecutablePath })
+            versions = @($Facts.Versions | ForEach-Object { [string]$_ })
+            peArchitecture = [string]$Facts.Architecture
+            packageFamily = $(if ($Summary) { $null } else { [string]$target.PackageFamily })
+            appId = $(if ($Summary) { $null } else { [string]$target.AppId })
+        }
+        runtime = [pscustomobject][ordered]@{
+            status = $(if ($processes.Count) { 'running' } else { 'not-running' })
+            primaryPids = @($Facts.PrimaryPids | ForEach-Object { [int]$_ })
+            relatedPids = @($Facts.RelatedPids | ForEach-Object { [int]$_ })
+            processCount = $processes.Count
+            processes = @(if (-not $Summary) { $processes | ForEach-Object {
+                [pscustomobject][ordered]@{ pid = [int]$_.Pid; parentPid = [int]$_.ParentPid; name = [string]$_.Name; path = $(if ($_.Path) { [string]$_.Path } else { $null }) }
+            } })
+        }
+        frameworks = [pscustomobject][ordered]@{
+            detected = [bool]$signals.Count; families = $families
+            signals = @(if (-not $Summary) { $signals | ForEach-Object {
+                [pscustomobject][ordered]@{ family = [string]$_.Family; strength = [string]$_.Strength; evidence = [string]$_.Evidence }
+            } })
+        }
+        interfaces = [pscustomobject][ordered]@{
+            cdp = [pscustomobject][ordered]@{ status = $(if ($cdpEndpoints.Count) { 'available' } else { 'unavailable' }); endpoints = $cdpEndpoints }
+            protocols = [pscustomobject][ordered]@{
+                status = $(if (@($Facts.Protocols).Count) { 'candidate' } else { 'unavailable' }); count = @($Facts.Protocols).Count
+                items = @(if (-not $Summary) { $Facts.Protocols | ForEach-Object {
+                    [pscustomobject][ordered]@{ scheme = [string]$_.Scheme; source = [string]$_.Source; detail = [string]$_.Detail }
+                } })
+            }
+            com = [pscustomobject][ordered]@{
+                status = $(if (@($Facts.Com.Servers).Count -or @($Facts.Com.TypeLibs).Count) { 'candidate' } else { 'unavailable' })
+                serverCount = @($Facts.Com.Servers).Count; typeLibraryCount = @($Facts.Com.TypeLibs).Count
+                servers = @(if (-not $Summary) { $Facts.Com.Servers | ForEach-Object {
+                    [pscustomobject][ordered]@{ progId = [string]$_.ProgId; versionIndependentProgId = [string]$_.VersionIndependentProgId; clsid = [string]$_.Clsid; kind = [string]$_.Kind; server = [string]$_.Server }
+                } })
+                typeLibraries = @(if (-not $Summary) { $Facts.Com.TypeLibs | ForEach-Object {
+                    [pscustomobject][ordered]@{ guid = [string]$_.Guid; version = [string]$_.Version; description = [string]$_.Description; platform = [string]$_.Platform; file = [string]$_.File }
+                } })
+            }
+        }
+        windows = [pscustomobject][ordered]@{
+            status = $(if ($windows.Count) { 'available' } else { 'unavailable' })
+            count = $windows.Count
+            visibleCount = @($windows | Where-Object { $_.Visible -and -not $_.Cloaked -and -not $_.Iconic }).Count
+            items = @(if (-not $Summary) { $windows | ForEach-Object { ConvertTo-ProbeWindowRecord $_ } })
+        }
+        uia = [pscustomobject][ordered]@{
+            status = $uiaStatus
+            timedOut = [bool]$uia.TimedOut
+            total = $(if ($uiaStatus -eq 'available') { [int]$uia.Total } else { $null })
+            editable = $(if ($uiaStatus -eq 'available') { [int]$uia.Editable } else { $null })
+            actionable = $(if ($uiaStatus -eq 'available') { [int]$uia.Actionable } else { $null })
+            focusable = $(if ($uiaStatus -eq 'available') { [int]$uia.Focusable } else { $null })
+            offscreen = $(if ($uiaStatus -eq 'available') { [int]$uia.Offscreen } else { $null })
+        }
+        capabilities = [pscustomobject][ordered]@{
+            l0 = [string]$Facts.Capabilities.L0; l1 = [string]$Facts.Capabilities.L1
+            l2 = [string]$Facts.Capabilities.L2; l3 = [string]$Facts.Capabilities.L3
+        }
+        cache = $cache
+        warnings = [pscustomobject][ordered]@{ count = $warnings.Count; itemsIncluded = -not $Summary; items = @(if (-not $Summary) { $warnings }) }
+    }
+}
+
+function ConvertTo-ProbeJson($Value) { return ($Value | ConvertTo-Json -Depth 14) }
+
+function Format-ProbeSummary($Report) {
+    if ($Report.status -eq 'not-found') { return 'probe summary: status=not-found query=<redacted> warnings=' + $Report.warnings.count }
+    return ('probe summary: status={0} query=<redacted> runtime={1} processes={2} windows={3} cdp={4} com={5} uia={6} routes=L0:{7},L1:{8},L2:{9},L3:{10} cache={11} warnings={12}' -f
+        $Report.status, $Report.runtime.status, $Report.runtime.processCount, $Report.windows.count,
+        $Report.interfaces.cdp.status, $Report.interfaces.com.status, $Report.uia.status,
+        $Report.capabilities.l0, $Report.capabilities.l1, $Report.capabilities.l2, $Report.capabilities.l3,
+        $Report.cache.status, $Report.warnings.count)
 }
 
 function Get-NormalizedName([string] $Text) {
@@ -1157,11 +1350,15 @@ if ($selected -and $selected.Pid -and $selected.Source -eq '运行中窗口') {
     }
 }
 
-Write-Output '花叔 Windows 应用能力探测器（只读）'
-Write-Output ("查询: {0}" -f $ProbeQuery)
-Write-Output '边界: 不启动/关闭/激活目标 app；不点击、不输入、不附加调试器。'
-
 if (-not $selected) {
+    if ($Json -or $Summary) {
+        $report = New-ProbeReport ([ordered]@{ Warnings = @($script:Warnings) }) $false ([bool]$Summary)
+        if ($Json) { Write-Output (ConvertTo-ProbeJson $report) } else { Write-Output (Format-ProbeSummary $report) }
+        exit 1
+    }
+    Write-Output '花叔 Windows 应用能力探测器（只读）'
+    Write-Output ("查询: {0}" -f $ProbeQuery)
+    Write-Output '边界: 不启动/关闭/激活目标 app；不点击、不输入、不附加调试器。'
     Write-Section '结果'
     Write-Output '未找到匹配的安装记录、快捷方式、App Paths、AppX、运行进程或窗口。'
     Write-Output '可改用准确进程名（不带 .exe 也可）或 exe/lnk/安装目录的完整路径。'
@@ -1171,6 +1368,11 @@ if (-not $selected) {
     }
     exit 1
 }
+
+$probeText = @(. {
+Write-Output '花叔 Windows 应用能力探测器（只读）'
+Write-Output ("查询: {0}" -f $ProbeQuery)
+Write-Output '边界: 不启动/关闭/激活目标 app；不点击、不输入、不附加调试器。'
 
 $exePath = $selected.Path
 $installRoot = if ($selected.InstallLocation) { $selected.InstallLocation } elseif ($exePath) { Split-Path -Parent $exePath } else { $null }
@@ -1464,4 +1666,56 @@ if ($script:Warnings.Count) {
 
 Write-Output ''
 Write-Output '完成：全过程未启动、关闭或操控目标 app。'
+})
+
+$l0 = if ($hasCdp) { 'cdp' } elseif ($hasCom) { 'com' } elseif ($protocols.Count -or $ports.Count) { 'protocol-or-service-candidate' } elseif ($hasChromium) { 'chromium-candidate' } else { 'none' }
+$l1 = if ($uia.Available -and $uia.Editable -gt 0 -and $uia.Actionable -gt 0) { 'available' }
+    elseif ($uia.Available -and ($uia.Editable -gt 0 -or $uia.Actionable -gt 0)) { 'partial' }
+    elseif ($relatedProcesses.Count -eq 0) { 'unknown' } else { 'unavailable' }
+$l2 = if ($hasVisibleWindow -and -not $targetAboveSelf -and -not $integrityUnknown) { 'eligible' }
+    elseif ($targetAboveSelf) { 'blocked-integrity' }
+    elseif ($hasVisibleWindow -and $integrityUnknown) { 'unknown-integrity' }
+    elseif ($targetWindows.Count -gt 0) { 'blocked-window-state' } else { 'unavailable' }
+$facts = [ordered]@{
+    Warnings = @($script:Warnings); Target = $selected; InstallRoot = $installRoot; ExecutablePath = $exePath
+    Versions = @($versions); Architecture = Get-PEArchitecture $exePath
+    PrimaryPids = @($primaryPids); RelatedPids = @($relatedPids); Processes = @($relatedProcesses)
+    Signals = @($allSignals); CdpResults = @($cdpResults); Protocols = @($protocols); Com = $com
+    Windows = @($targetWindows); Uia = $uia
+    Capabilities = [ordered]@{ L0 = $l0; L1 = $l1; L2 = $l2; L3 = $(if ($targetWindows.Count) { 'available' } else { 'unavailable' }) }
+}
+
+$cacheState = if ($NoCache -or [string]$env:WIN_USE_MASTER_CAPABILITY_CACHE -eq '0') {
+    New-ProbeCacheState 'disabled'
+} elseif (-not $script:CapabilityCacheCoreLoaded) {
+    New-ProbeCacheState 'unavailable'
+} else {
+    try {
+        $identityReport = New-ProbeReport $facts $true $false
+        $cachePath = Get-CapabilityCachePath
+        $readResult = Read-CapabilityCacheDocument $cachePath
+        Get-CapabilityCacheHint $readResult $identityReport ([DateTimeOffset]::Now)
+    }
+    catch {
+        Add-Warning '建议性能力缓存未通过校验，已忽略；实时探测结果不受影响。'
+        New-ProbeCacheState 'invalid'
+    }
+}
+$facts.Warnings = @($script:Warnings)
+$facts.Cache = $cacheState
+
+if ($Json -or $Summary) {
+    $report = New-ProbeReport $facts $true ([bool]$Summary)
+    if ($Json) { Write-Output (ConvertTo-ProbeJson $report) } else { Write-Output (Format-ProbeSummary $report) }
+}
+else {
+    $probeText | ForEach-Object { Write-Output $_ }
+    if ($cacheState.status -eq 'fresh') {
+        $route = if (@($cacheState.advisoryOrder).Count) { @($cacheState.advisoryOrder) -join ' → ' } else { '无已观察到的可用结构接口' }
+        Write-Output "建议性缓存（仅调整探测顺序）: $route；仍须实时核验 PID/端口/权限/桌面/前台/风险。"
+    }
+    elseif ($cacheState.status -in @('expired','version-changed','unknown-version','invalid')) {
+        Write-Output "建议性缓存已忽略: status=$($cacheState.status)；只采用本次实时探测。"
+    }
+}
 $global:LASTEXITCODE = 0

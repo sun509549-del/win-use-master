@@ -1,0 +1,10 @@
+{
+  "temporaryStorage": {
+    "directoryExists": true,
+    "writeStatus": "unknown",
+    "writeProbePerformed": false,
+    "historicalCandidates": 4,
+    "validManifestHistorical": 1,
+    "expiredSessions": 2
+  }
+}

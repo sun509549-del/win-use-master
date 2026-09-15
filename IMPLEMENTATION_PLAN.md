@@ -1,16 +1,17 @@
 # win-use-master 未来实施方案
 
-> 计划版本：2026-09-14
+> 计划版本：2026-09-15
 > 计划范围：从当前 Beta 候选工作区推进到可审计的 Beta 发布，再推进到 v1.0
 > 当前状态基线：[`PROJECT_STATUS.md`](PROJECT_STATUS.md)
 > 执行原则：里程碑必须通过验收门才能前进；日期是目标，不是绕过安全或测试的理由。
 
-## 当前执行进度（2026-09-14）
+## 当前执行进度（2026-09-15）
 
-- M0-02 无桌面回归已完成：统一入口实跑 Contract 层 9/9 通过。
+- M0-02 无桌面回归已完成：统一入口当前实跑 Contract 层 14/14 通过。
 - M1-01 已完成首版：`tests/run-tests.ps1` 支持 Contract/Desktop/Coordinate/Profiles、`-List`、`-DryRun`、`-TestId`、显式 profile、单项截止时间和 0/1/2 聚合。
 - M1-02 已完成首版：`win-use-master/test-report-v1` 只保存环境版本、结果、耗时、输出行数和 SHA-256，不嵌入原始测试日志；契约覆盖 dry-run 与真实 parse 执行。
 - M1-03 实现完成：CI 已复用统一 parse，增加调度器契约和 UIA timeout，拆分核心/CDP job，并建立 Node 22/24 矩阵；action 固定到完整 SHA且关闭无用缓存。Node 22 结论必须以每个目标提交的远程 Actions 结果为准。
+- M2-01～M2-06 已完成首版。M2-06 已覆盖 windows 首次/重复新进程、100/300/1000 合成 UIA 与临时无头 Edge 的只读 CDP inspect；PrintWindow 和 CDP 写性能留待专用桌面/单独授权。M2-05 删除 apply 尚未开放。
 - M0-03～M0-05 尚待专用空闲桌面，因此不能把当前状态标成完整 Beta 发布通过。
 
 ## 1. 目标和成功定义
@@ -189,6 +190,8 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 
 ### M2-01：只读 `doctor` 命令
 
+状态：**已实现，待本批提交/远程 CI 验证。** 生产入口在 helper 加载前分发，五类 fixture 已覆盖干净环境、缺 Node、helper 过期、安全桌面和历史残留；`doctor-report-v1`、文本/摘要、隐私和零副作用由 Contract 层守护。为坚持零写入，临时目录只报告是否存在，实际写权限为 `unknown/not-probed`，不会用探测文件换取“可写”结论。
+
 新增 `win.ps1 doctor [--json] [--summary]`，默认只读，检查：
 
 - PowerShell 版本和执行策略是否满足运行条件；
@@ -206,7 +209,9 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 
 ### M2-02：UIA 限定查询与分页
 
-当前精确 `--id` 已能在读取正文前定位唯一元素，但通用模糊模式仍受 300 项上限影响。计划增加：
+状态：**已实现，待本批提交/远程 CI 与真实 UIA 桌面复验。** `uiaread` 已支持精确/前缀 ID、ControlType、精确/前缀 Name、唯一子树、显式 limit 和 `uia-continuation-v1`。无桌面 provider fixture 已覆盖 300 项后查询、组合过滤、正文延迟读取、分页推进、token 脱敏以及树/窗口变化失效；现有位置过滤词和单独 `--id` 行为保持兼容。
+
+已实现范围（旧位置模糊过滤仍按兼容约定受 300 项上限影响）：
 
 - 按 `AutomationId`、`ControlType`、Name 的精确或显式前缀条件组合；
 - `--within-id`/限定子树，避免扫描整个窗口；
@@ -214,25 +219,29 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 - 先匹配元数据，再按用户请求读取 Value；
 - 元素树发生变化时 continuation 失效并返回 2，不使用旧引用继续动作。
 
-兼容策略：保留现有 `uia`/`uiaread` 文本输出和短引用；新查询能力先增加参数，不改变旧命令默认含义。
+兼容策略：保留现有 `uia`/`uiaread` 文本输出和短引用；新查询能力通过附加参数启用，不改变旧命令默认含义。
 
 验收标准：目标位于第 300 项之后仍可通过限定条件找到；多个同 ID、相似 ID、树变化、密码控件和 provider 超时均有契约测试。
 
 ### M2-03：统一机器可读输出
 
+状态：**已实现，待本批提交/远程 CI。** `doctor`、`probe`、`windows`、`frontmost`、`idle`、`uia`、`uiaread`、`restore/minimize` 状态结果，以及 CDP `list/inspect` 已有版本化 schema。默认文本保持兼容；摘要隐私、查询/选择器不回显、URL query/fragment 清理、unknown/null、写状态 partial 和单文档 stdout 由无桌面/无头契约守护。
+
 为主要只读命令增加可选 `--json`，不改变默认文本输出。优先覆盖：
 
-- `windows`、`frontmost`、`idle`；
-- `probe`、`doctor`；
-- `uia`、`uiaread`；
-- `restore`/`minimize` 的状态结果；
-- CDP 目标和 inspect 摘要。
+- `windows`、`frontmost`、`idle`（已完成）；
+- `probe`、`doctor`（已完成）；
+- `uia`、`uiaread`（已完成）；
+- `restore`/`minimize` 的状态结果（已完成）；
+- CDP 目标和 inspect 摘要（已完成；其它 CDP 读取仍保留人读输出）。
 
 每类输出必须有版本化 schema、稳定字段和敏感字段策略。终端摘要、JSON 和落盘 receipt 应区分用途，避免为了结构化而把正文复制三份。
 
 验收标准：schema 正向/反向样例有测试；未知状态保留为 `unknown`，不能用 `false` 或空字符串掩盖。
 
 ### M2-04：保守的应用能力提示
+
+状态：**已实现，待本批提交/远程 CI。** `capability-cache-v1` 只由只读 probe 和独立 `cache show/record/clear` 入口加载；记录动作必须显式给出 full `probe-report-v1`，默认文件 30 天失效且版本变化立即失效。字段白名单不包含标题、正文、路径、PID/端口或 L2/授权状态，summary 不列 entry，`show` 零写入，`--no-cache`/环境变量可完全禁用读取。
 
 增加本地 `capability-cache-v1`，只保存不敏感的能力观察，例如产品名、版本、exe 名、窗口类和“UIA provider 曾超时/发现 COM/CDP”的时间戳。
 
@@ -245,7 +254,11 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 
 验收标准：伪造缓存不能授权任何写入；版本变化和过期时间测试通过；禁用缓存时行为与当前版本一致。
 
+首版验收结果：`tests/capability-cache-contract.ps1` 已验证字段规范化、30 天/未来时间、版本变化、摘要隐私、只读查看文件哈希与时间戳不变、禁用时零修改、精确删除边界，以及伪造授权字段不能绕过 CDP session。真实写路径没有导入缓存模块。
+
 ### M2-05：证据和临时数据治理
+
+状态：**只读阶段已实现，删除阶段未开放。** `cleanup [--dry-run] [--json] [--summary]` 固定扫描系统临时根的项目直接子目录，验证唯一 `temp-artifact-v1` manifest、artifact ID、30 天内生命周期、到期状态、owner PID/启动时间、reparse point 和 10,000 项枚举上限。报告不含绝对路径或 manifest 未知字段，所有 side-effect 计数为 0；`--apply` 在扫描前退出 2。
 
 规划 `cleanup --dry-run` 与显式 `cleanup --apply`：
 
@@ -256,9 +269,11 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 - 输出将删除内容、大小、创建时间和拒绝原因；
 - 删除失败保留列表，不扩大路径范围重试。
 
-该命令属于破坏性维护动作，真正执行仍需用户明确要求。M2 阶段先实现 fixture 与 dry-run 测试，再决定是否开放 `--apply`。
+该命令属于破坏性维护动作，真正执行仍需用户明确要求。`tests/cleanup-contract.ps1` 已用逐文件哈希/长度/时间戳证明 dry-run 与 apply 拒绝零修改；开放 `--apply` 前仍需二次扫描、防 TOCTOU 绑定、逐项结果和部分失败契约。
 
 ### M2-06：性能基线
+
+状态：**只读首版已实现，桌面/写入第二阶段待办。** `benchmark [--quick] [--no-cdp] [--json] [--summary]` 生成 `performance-report-v1`；标准档对重复 windows、三档 UIA 与 CDP inspect 各采 5 个样本。UIA 直接执行生产查询函数但只接合成 provider，CDP 只使用本次自启、可精确回收的临时无头 Edge；报告只有聚合值与副作用计数。首次本机结果、口径和局限见 `references/性能基线.md`。
 
 先测量再设目标，记录：
 
@@ -269,6 +284,8 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 - 每轮测试创建/回收进程和临时目录数量。
 
 性能改动不得通过延长危险写入超时、取消 UIA 隔离或跳过安全校验获得。
+
+首版验收结果：`tests/benchmark-contract.ps1` 已验证 nearest-rank p50/p95、quick/no-CDP 的 windows/UIA 结果、摘要隐私、仓库逐文件零修改、参数在测量前拒绝，以及生产 UIA/CDP 超时常量保持不变。标准档另实跑只读 CDP inspect 并确认临时 profile/owner 进程清零。PrintWindow 与 `insert/press` 没有在本轮执行，不能写成已覆盖。
 
 ## 8. M3：真实应用覆盖扩展
 

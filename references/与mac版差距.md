@@ -1,6 +1,6 @@
 # 与 huashu-mac-use 的功能差距
 
-> 基线：上游 [huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use) 的 README/SKILL 所表达的设计，以及用户提供的[相关文章](https://mp.weixin.qq.com/s/pgvLMG7pg_1lpPLMN8zbhg)。本表记录 Windows 版本的工程差距，不把操作系统做不到的能力伪装成待实现功能。更新日期：2026-09-14。
+> 基线：上游 [huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use) 的 README/SKILL 所表达的设计，以及用户提供的[相关文章](https://mp.weixin.qq.com/s/pgvLMG7pg_1lpPLMN8zbhg)。本表记录 Windows 版本的工程差距，不把操作系统做不到的能力伪装成待实现功能。更新日期：2026-09-15。
 
 ## 已经对齐
 
@@ -14,7 +14,7 @@
 | 后台截图、判空、必要时短借前台 | `PrintWindow` 看门狗、严格 sibling recovery、`shotfg` 稳定双帧 |
 | 图上坐标到窗口坐标换算 | `@截图` + receipt 中 `imageToWindowScale` |
 | 动作后验证而非相信 API 返回值 | 像素差分、UIA 读回、CDP 交互树摘要与 effect |
-| 每一步机器可读取证 | 截图 receipt；L1/L2 after action 链；CDP `action-receipt-v1` |
+| 每一步机器可读取证 | `doctor/probe/windows/frontmost/idle/uia/uiaread/window-state/CDP list+inspect` 版本化结果；截图 receipt；L1/L2 after action 链；CDP `action-receipt-v1` |
 | 陌生 provider 不能卡死 agent | UIA 全部放入 6 秒隔离 worker，写超时标 `unknown` |
 | CDP 不能无限等待 | HTTP/连接 5 秒、请求 6 秒、auto 候选限额、act 200 步/120 秒；写超时标 `unknown` |
 | 一键安装与干净环境回归 | 公开 GitHub 仓库可被 `npx skills add` 识别；Windows CI 负责解析、构建和无头 CDP 集成测试 |
@@ -37,7 +37,11 @@
 | 系统设置类样本 | Windows 11 设置隔离只读档案：AUMID 启动、ApplicationFrameHost/SystemSettings 双进程身份、PrintWindow 与过滤 UIA 回读；零设置写入，敏感 map 用后删除 |
 | 跨 app 共性结论 | 9 个 app 归纳 9 条，每条至少有两个不同实现支撑；新增“语义树也是敏感证据”并由设置/Excel/WorkBuddy 交叉复现 |
 | 敏感语义输出最小化 | `see/uia/uiaread --summary` 只输出元素数量/类型统计，不把 UIA 名称、值或过滤词展开到终端；Settings 与 WinForms fixture 回归守住 |
-| UIA 定向读取 | `uiaread --id` 在读取正文前精确筛选唯一 AutomationId，避免旧子串过滤带出无关控件；无桌面 provider 契约与 WinForms 实机回归分开验证 |
+| UIA 定向读取 | `uiaread` 支持精确/前缀 ID、类型、非敏感 Name、唯一子树和绑定树指纹的分页；正文只读当前页，树变化拒绝 continuation。无桌面 provider 契约与真实 WinForms 回归分开验证 |
+| 主要只读状态的机器输出 | `windows/frontmost/idle/uia/uiaread --json` 使用版本化 schema；摘要隐去标题/UIA items，查询值不回显，unknown/null 有显式契约 |
+| 应用能力经验的保守复用 | `capability-cache-v1` 只保存产品/版本/exe 名、窗口类与 COM/CDP/UIA 观察；30 天或版本变化失效，`--no-cache` 可禁用，伪造缓存不能参与任何写授权 |
+| 临时证据治理的安全预演 | `cleanup-plan-v1` 只读检查 temp namespace、manifest、到期、owner 和 reparse point；summary 脱敏，`--apply` 未开放，不把“同名前缀”当删除授权 |
+| 可重复的性能观察 | `performance-report-v1` 已覆盖 windows 首次/重复进程、100/300/1000 合成 UIA 与临时无头 Edge 的只读 CDP inspect；聚合报告不含正文/路径/selector，安全超时不因基线放宽 |
 
 ## 仍缺少或样本不足
 

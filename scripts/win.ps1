@@ -35,6 +35,22 @@ function Write-HuWarning([string] $Message) {
     [Console]::Error.WriteLine($Message)
 }
 
+# doctor, cache management, cleanup planning and performance baselines run
+# before Import-HuCore. Cache data never participates in write gates.
+if ($Command -iin @('doctor','cache','cleanup','benchmark')) {
+    if ($script:Force -or $script:Dry) { Stop-Hu "$Command 不接受 --force/--dry；不会把绕过类选项传入独立入口。" 2 }
+    $entryName = switch ($Command.ToLowerInvariant()) {
+        'doctor' { 'doctor.ps1' }
+        'cache' { 'capability-cache.ps1' }
+        'cleanup' { 'cleanup.ps1' }
+        'benchmark' { 'benchmark.ps1' }
+    }
+    $entry = Join-Path $PSScriptRoot $entryName
+    if (-not (Test-Path -LiteralPath $entry -PathType Leaf)) { Stop-Hu "$Command 独立入口缺失。" 1 }
+    & $entry @CommandArgs
+    exit $LASTEXITCODE
+}
+
 function Get-RiskPolicy {
     if ($script:RiskPolicy) { return $script:RiskPolicy }
     $path = Join-Path (Split-Path -Parent $PSScriptRoot) 'config\risk-actions.json'
@@ -126,15 +142,19 @@ function Import-HuCore {
     $dll = Join-Path $PSScriptRoot 'HuWin.dll'
     $source = Join-Path $PSScriptRoot 'HuWin.cs'
     if (-not (Test-Path -LiteralPath $source)) { Stop-Hu "找不到底层源码: $source" }
+    $requirePrebuilt = [Environment]::GetEnvironmentVariable('WIN_USE_MASTER_REQUIRE_PREBUILT_HELPER') -eq '1'
 
     # A stale DLL is worse than a short one-time compile: it silently runs old
     # safety gates. Prefer source whenever it is newer.
     if ((Test-Path -LiteralPath $dll) -and
         (Get-Item -LiteralPath $dll).LastWriteTimeUtc -ge (Get-Item -LiteralPath $source).LastWriteTimeUtc) {
         try { Add-Type -Path $dll; return } catch {
+            if ($requirePrebuilt) { Stop-Hu '预构建内核不可加载；benchmark 不会现场编译，请先运行 scripts/build.ps1。' 1 }
             Write-HuWarning "预编译内核加载失败，改为现场编译: $($_.Exception.Message)"
         }
     }
+
+    if ($requirePrebuilt) { Stop-Hu '预构建内核缺失或过期；benchmark 不会现场编译，请先运行 scripts/build.ps1。' 1 }
 
     try {
         Add-Type -AssemblyName System.Drawing.Common -ErrorAction SilentlyContinue
@@ -174,18 +194,27 @@ function Invoke-UiaWorker {
         $Spec = $null,
         [string] $Text,
         [int] $Limit = 300,
-        [string] $ExactId = ''
+        [string] $ExactId = '',
+        $Query = $null,
+        [string] $Continuation = ''
     )
     $worker = Join-Path $PSScriptRoot 'uia-worker.ps1'
     if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) { Stop-Hu "找不到 UIA worker: $worker" }
+    $processStartTicks = 0L
+    try { $processStartTicks = (Get-Process -Id $Window.Pid -ErrorAction Stop).StartTime.ToUniversalTime().Ticks } catch { }
     $request = [ordered]@{
         mode = $Mode; hwnd = [long]$Window.Hwnd; limit = $Limit
-        window = [ordered]@{ l = $Window.L; t = $Window.T; r = $Window.R; b = $Window.B }
+        window = [ordered]@{
+            l = $Window.L; t = $Window.T; r = $Window.R; b = $Window.B
+            pid = $Window.Pid; processStartTicks = $processStartTicks
+        }
     }
     if ($Reference) { $request['reference'] = $Reference }
     if ($null -ne $Spec) { $request['spec'] = $Spec }
     if ($Mode -eq 'set') { $request['text'] = $Text }
     if ($ExactId) { $request['exactId'] = $ExactId }
+    if ($null -ne $Query) { $request['query'] = $Query }
+    if ($Continuation) { $request['continuation'] = $Continuation }
 
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = (Get-Process -Id $PID).Path
@@ -274,7 +303,242 @@ function Format-Window($Window) {
         $Window.L, $Window.T, $Window.W, $Window.H, $Window.Cls, $title)
 }
 
-function Stop-AmbiguousHuWindow([string] $Selector, [object[]] $Matches) {
+function Get-HuWindowState($Window) {
+    if ($Window.Iconic) { return 'minimized' }
+    if ($Window.Cloaked) { return 'cloaked' }
+    if (-not $Window.Visible) { return 'hidden' }
+    return 'current'
+}
+
+function ConvertTo-HuWindowRecord($Window, [bool] $Summary = $false) {
+    return [pscustomobject][ordered]@{
+        hwnd = Format-Hwnd $Window.Hwnd
+        pid = [uint32]$Window.Pid
+        owner = [string]$Window.Owner
+        title = $(if ($Summary) { $null } else { [string]$Window.Title })
+        className = [string]$Window.Cls
+        state = Get-HuWindowState $Window
+        rect = [pscustomobject][ordered]@{
+            x = [int]$Window.L; y = [int]$Window.T
+            width = [int]$Window.W; height = [int]$Window.H
+        }
+        flags = [pscustomobject][ordered]@{
+            visible = [bool]$Window.Visible; minimized = [bool]$Window.Iconic
+            maximized = [bool]$Window.Zoomed; cloaked = [bool]$Window.Cloaked
+            toolWindow = [bool]$Window.Tool; hung = [bool]$Window.Hung
+        }
+    }
+}
+
+function Format-HuWindowSummary($Window) {
+    $record = ConvertTo-HuWindowRecord $Window $true
+    return ('id={0} pid={1} owner="{2}" state={3} rect={4},{5} {6}x{7} class="{8}" title=<redacted>' -f
+        $record.hwnd, $record.pid, $record.owner, $record.state,
+        $record.rect.x, $record.rect.y, $record.rect.width, $record.rect.height, $record.className)
+}
+
+function Get-HuTypeCounts([object[]] $Elements) {
+    return @($Elements | Group-Object { [string]$_.ControlType } | Sort-Object Name | ForEach-Object {
+        [pscustomobject][ordered]@{ controlType = [string]$_.Name; count = [int]$_.Count }
+    })
+}
+
+function New-HuWindowsReport([object[]] $Windows, [int] $Hidden, [int] $Folded,
+    [bool] $FilterApplied, [bool] $All, [bool] $Raw, [bool] $Summary) {
+    return [pscustomobject][ordered]@{
+        schema = 'win-use-master/windows-result-v1'
+        observedAt = [DateTimeOffset]::Now.ToString('o')
+        status = 'ok'
+        privacy = [pscustomobject][ordered]@{
+            mode = $(if ($Summary) { 'summary' } else { 'full' })
+            collected = 'window-metadata'
+            redactedFields = @(if ($Summary) { 'windows[].title' })
+        }
+        query = [pscustomobject][ordered]@{
+            filterApplied = $FilterApplied; filterValueIncluded = $false
+            all = $All; raw = $Raw
+        }
+        counts = [pscustomobject][ordered]@{
+            returned = @($Windows).Count; hidden = $Hidden; folded = $Folded
+        }
+        windows = @($Windows | ForEach-Object { ConvertTo-HuWindowRecord $_ $Summary })
+    }
+}
+
+function New-HuFrontmostReport([long] $Hwnd, $Window, [bool] $Summary) {
+    $status = if ($Hwnd -eq 0) { 'none' } elseif ($null -eq $Window) { 'unlisted' } else { 'resolved' }
+    return [pscustomobject][ordered]@{
+        schema = 'win-use-master/frontmost-result-v1'
+        observedAt = [DateTimeOffset]::Now.ToString('o')
+        status = $status
+        privacy = [pscustomobject][ordered]@{
+            mode = $(if ($Summary) { 'summary' } else { 'full' })
+            redactedFields = @(if ($Summary) { 'window.title' })
+        }
+        foregroundHwnd = $(if ($Hwnd -eq 0) { $null } else { Format-Hwnd $Hwnd })
+        window = $(if ($null -eq $Window) { $null } else { ConvertTo-HuWindowRecord $Window $Summary })
+    }
+}
+
+function New-HuIdleReport([double] $UserIdleSeconds, [double] $RawIdleSeconds,
+    [long] $ForegroundHwnd, $ForegroundWindow, [bool] $Summary) {
+    $known = $UserIdleSeconds -ge 0
+    $rawKnown = $RawIdleSeconds -ge 0
+    $presence = if (-not $known) { 'unknown' } elseif ($UserIdleSeconds -lt $script:IdleThresholdSeconds) { 'present' } else { 'idle' }
+    $gate = if ($presence -eq 'unknown') { 'unknown' } elseif ($presence -eq 'present') { 'wait' } else { 'eligible' }
+    $syntheticTrailApplied = $known -and $rawKnown -and $UserIdleSeconds -ge 3599 -and $RawIdleSeconds -lt 10
+    return [pscustomobject][ordered]@{
+        schema = 'win-use-master/idle-result-v1'
+        observedAt = [DateTimeOffset]::Now.ToString('o')
+        status = $(if ($known) { 'known' } else { 'unknown' })
+        privacy = [pscustomobject][ordered]@{
+            mode = $(if ($Summary) { 'summary' } else { 'full' })
+            redactedFields = @(if ($Summary) { 'frontmost.window.title' })
+        }
+        idle = [pscustomobject][ordered]@{
+            seconds = $(if ($known) { [Math]::Round($UserIdleSeconds, 3) } else { $null })
+            rawSeconds = $(if ($rawKnown) { [Math]::Round($RawIdleSeconds, 3) } else { $null })
+            thresholdSeconds = $script:IdleThresholdSeconds
+            source = $(if (-not $known) { 'unknown' } elseif ($syntheticTrailApplied) { 'synthetic-input-trail' } else { 'system-last-input' })
+        }
+        presence = $presence
+        coordinateGate = [pscustomobject][ordered]@{
+            status = $gate; maximumWaitSeconds = $script:IdleWaitSeconds
+        }
+        frontmost = New-HuFrontmostReport $ForegroundHwnd $ForegroundWindow $Summary
+        readCommandsAffected = $false
+    }
+}
+
+function ConvertTo-HuUiaActionRecord($Element) {
+    return [pscustomobject][ordered]@{
+        ref = [string]$Element.Ref; controlType = [string]$Element.ControlType
+        name = [string]$Element.Name; automationId = [string]$Element.AutomationId
+        className = [string]$Element.ClassName; value = [string]$Element.Value
+        screenRect = [pscustomobject][ordered]@{
+            x = [double]$Element.X; y = [double]$Element.Y
+            width = [double]$Element.Width; height = [double]$Element.Height
+        }
+        windowCenter = [pscustomobject][ordered]@{ x = [double]$Element.Cx; y = [double]$Element.Cy }
+        enabled = [bool]$Element.Enabled; offscreen = [bool]$Element.Offscreen
+        isPassword = [bool]$Element.IsPassword; patterns = @($Element.Patterns | ForEach-Object { [string]$_ })
+    }
+}
+
+function ConvertTo-HuUiaReadableRecord($Element) {
+    return [pscustomobject][ordered]@{
+        controlType = [string]$Element.ControlType; name = [string]$Element.Name
+        automationId = [string]$Element.AutomationId; value = [string]$Element.Value
+        isPassword = [bool]$Element.IsPassword; offscreen = [bool]$Element.Offscreen
+    }
+}
+
+function New-HuUiaElementsReport($Window, [object[]] $Elements, [int] $FirstPassCount, [bool] $Summary) {
+    return [pscustomobject][ordered]@{
+        schema = 'win-use-master/uia-elements-result-v1'
+        observedAt = [DateTimeOffset]::Now.ToString('o')
+        status = $(if (@($Elements).Count) { 'available' } else { 'empty' })
+        target = [pscustomobject][ordered]@{ hwnd = Format-Hwnd $Window.Hwnd; pid = [uint32]$Window.Pid }
+        privacy = [pscustomobject][ordered]@{
+            mode = $(if ($Summary) { 'summary' } else { 'full' })
+            collection = 'unchanged'
+            itemsIncluded = -not $Summary
+            redactedFields = @(if ($Summary) { 'items' } else { 'items[].value(password)' })
+        }
+        counts = [pscustomobject][ordered]@{ firstPass = $FirstPassCount; returned = @($Elements).Count }
+        typeCounts = @(Get-HuTypeCounts $Elements)
+        items = @(if (-not $Summary) { $Elements | ForEach-Object { ConvertTo-HuUiaActionRecord $_ } })
+    }
+}
+
+function New-HuUiaReadReport($Window, [object[]] $Elements, $Options, $Page, [bool] $Summary) {
+    $query = $Options.Query
+    $criteria = [pscustomobject][ordered]@{
+        idExact = [bool]([string]$query.idExact); idPrefix = [bool]([string]$query.idPrefix)
+        controlType = [bool]([string]$query.controlType); nameExact = [bool]([string]$query.nameExact)
+        namePrefix = [bool]([string]$query.namePrefix); withinId = [bool]([string]$query.withinId)
+    }
+    $mode = if ($Options.Structured) { 'structured' } elseif ($Options.ExactId) { 'exact-id' } elseif ($Options.Filter) { 'legacy-filter' } else { 'all' }
+    $pageRecord = $null
+    if ($null -ne $Page) {
+        $pageRecord = [pscustomobject][ordered]@{
+            schema = [string]$Page.schema; offset = [int]$Page.offset; nextOffset = [int]$Page.nextOffset
+            matched = [int]$Page.matched; returned = [int]$Page.returned; hasMore = [bool]$Page.hasMore
+            continuation = $(if ($Page.continuation) { [string]$Page.continuation } else { $null })
+        }
+    }
+    return [pscustomobject][ordered]@{
+        schema = 'win-use-master/uia-read-result-v1'
+        observedAt = [DateTimeOffset]::Now.ToString('o')
+        status = $(if (@($Elements).Count) { 'available' } else { 'empty' })
+        target = [pscustomobject][ordered]@{ hwnd = Format-Hwnd $Window.Hwnd; pid = [uint32]$Window.Pid }
+        privacy = [pscustomobject][ordered]@{
+            mode = $(if ($Summary) { 'summary' } else { 'full' })
+            collection = 'unchanged'
+            itemsIncluded = -not $Summary
+            redactedFields = @(if ($Summary) { 'items' } else { 'items[].value(password)' })
+        }
+        query = [pscustomobject][ordered]@{
+            mode = $mode; valuesIncluded = $false; criteria = $criteria
+            legacyFilterApplied = [bool]$Options.Filter
+            limit = [int]$Options.Limit; limitExplicit = [bool]$Options.LimitExplicit
+            continuationApplied = [bool]$Options.Continuation
+        }
+        counts = [pscustomobject][ordered]@{
+            returned = @($Elements).Count
+            password = @($Elements | Where-Object { [bool]$_.IsPassword }).Count
+        }
+        typeCounts = @(Get-HuTypeCounts $Elements)
+        items = @(if (-not $Summary) { $Elements | ForEach-Object { ConvertTo-HuUiaReadableRecord $_ } })
+        page = $pageRecord
+    }
+}
+
+function New-HuWindowStateReport([string] $Action, $BeforeWindow, $AfterWindow,
+    [Nullable[long]] $ForegroundBefore, [Nullable[long]] $ForegroundAfter,
+    [string] $ForegroundTransition, [string] $Status, [bool] $Summary, [bool] $DryRun = $false) {
+    $requestedState = if ($Action -eq 'minimize') { 'minimized' } else { 'current' }
+    $beforeState = if ($null -eq $BeforeWindow) { $null } else { Get-HuWindowState $BeforeWindow }
+    $afterState = if ($null -eq $AfterWindow) { $null } else { Get-HuWindowState $AfterWindow }
+    $effect = if ($DryRun) { 'not-applied' }
+        elseif ($Status -eq 'partial') { 'partial' }
+        elseif ($Status -eq 'completed' -and $beforeState -eq $afterState) { 'unchanged' }
+        elseif ($Status -eq 'completed') { 'changed' }
+        elseif ($Status -eq 'refused') { 'none' }
+        else { 'unknown' }
+    return [pscustomobject][ordered]@{
+        schema = 'win-use-master/window-state-result-v1'
+        observedAt = [DateTimeOffset]::Now.ToString('o')
+        status = $Status
+        action = $Action
+        requestedState = $requestedState
+        effect = $effect
+        privacy = [pscustomobject][ordered]@{
+            mode = $(if ($Summary) { 'summary' } else { 'full' })
+            selectorValueIncluded = $false
+            redactedFields = @(if ($Summary) { 'before.title'; 'after.title' })
+        }
+        method = 'ShowWindow-no-activate'
+        dryRun = $DryRun
+        focus = [pscustomobject][ordered]@{
+            borrowed = $false
+            before = $(if ($null -eq $ForegroundBefore -or [long]$ForegroundBefore -eq 0) { $null } else { Format-Hwnd ([long]$ForegroundBefore) })
+            after = $(if ($null -eq $ForegroundAfter -or [long]$ForegroundAfter -eq 0) { $null } else { Format-Hwnd ([long]$ForegroundAfter) })
+            transition = $(if ($ForegroundTransition) { $ForegroundTransition } else { 'not-observed' })
+        }
+        before = $(if ($null -eq $BeforeWindow) { $null } else { ConvertTo-HuWindowRecord $BeforeWindow $Summary })
+        after = $(if ($null -eq $AfterWindow) { $null } else { ConvertTo-HuWindowRecord $AfterWindow $Summary })
+    }
+}
+
+function ConvertTo-HuJson($Value) {
+    return ($Value | ConvertTo-Json -Depth 12)
+}
+
+function Stop-AmbiguousHuWindow([string] $Selector, [object[]] $Matches, [switch] $Summary) {
+    if ($Summary) {
+        Stop-Hu "refused: 窗口选择器匹配 $($Matches.Count) 个窗口；--summary 已省略选择器与候选详情，请改用明确 HWND。" 2
+    }
     $shown = @($Matches | Select-Object -First 8 | ForEach-Object { '  ' + (Format-Window $_) })
     $more = if ($Matches.Count -gt $shown.Count) { "`n  ... 另有 $($Matches.Count - $shown.Count) 个候选" } else { '' }
     Stop-Hu ("refused: 窗口选择器「$Selector」匹配 $($Matches.Count) 个窗口，不会自动猜测目标。" +
@@ -282,7 +546,7 @@ function Stop-AmbiguousHuWindow([string] $Selector, [object[]] $Matches) {
         "`n请从 windows 输出中复制明确的 HWND（0x...）后重试。") 2
 }
 
-function Resolve-HuWindow([string] $Selector) {
+function Resolve-HuWindow([string] $Selector, [switch] $Summary) {
     $wins = Get-HuWindows
     $numeric = ConvertTo-Hwnd $Selector
     if ($null -ne $numeric) {
@@ -290,8 +554,9 @@ function Resolve-HuWindow([string] $Selector) {
         if ($byHwnd.Count) { return $byHwnd[0] }
         $byPid = @($wins | Where-Object { $_.Pid -eq $numeric -and -not (Test-JunkWindow $_) } |
             Sort-Object @{ Expression = { $_.W * $_.H }; Descending = $true })
-        if ($byPid.Count -gt 1) { Stop-AmbiguousHuWindow $Selector $byPid }
+        if ($byPid.Count -gt 1) { Stop-AmbiguousHuWindow $Selector $byPid -Summary:$Summary }
         if ($byPid.Count -eq 1) { return $byPid[0] }
+        if ($Summary) { Stop-Hu '找不到窗口/进程；--summary 已省略选择器。先运行 win.ps1 windows --summary。' }
         Stop-Hu "找不到窗口/进程 $Selector。先运行 win.ps1 windows。"
     }
 
@@ -300,8 +565,11 @@ function Resolve-HuWindow([string] $Selector) {
         ($_.Owner.IndexOf($Selector, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
          $_.Title.IndexOf($Selector, [StringComparison]::OrdinalIgnoreCase) -ge 0)
     } | Sort-Object @{ Expression = { $_.W * $_.H }; Descending = $true })
-    if (-not $matches.Count) { Stop-Hu "没有 owner/title 含「$Selector」的窗口。先运行 win.ps1 windows。" }
-    if ($matches.Count -gt 1) { Stop-AmbiguousHuWindow $Selector $matches }
+    if (-not $matches.Count) {
+        if ($Summary) { Stop-Hu '没有匹配窗口；--summary 已省略选择器。先运行 win.ps1 windows --summary。' }
+        Stop-Hu "没有 owner/title 含「$Selector」的窗口。先运行 win.ps1 windows。"
+    }
+    if ($matches.Count -gt 1) { Stop-AmbiguousHuWindow $Selector $matches -Summary:$Summary }
     return $matches[0]
 }
 
@@ -774,29 +1042,80 @@ function Get-UiaReadableElements($Window, [int] $Limit = 300, [string] $ExactId 
     return @($reply.Result.items)
 }
 
+function Get-UiaReadableQueryResult($Window, [int] $Limit, $Query, [string] $Continuation = '') {
+    $reply = Invoke-UiaWorker $Window -Mode read -Limit $Limit -Query $Query -Continuation $Continuation
+    if ($reply.TimedOut) { Stop-Hu 'UIA 限定读取超过 6 秒，已终止辅助进程；continuation 不得重试，重新缩小查询范围。' 2 }
+    if ($reply.ExitCode -ne 0 -or $null -eq $reply.Result -or -not $reply.Result.ok) {
+        Stop-Hu ("UIA 限定读取失败: " + $(if ($reply.Error) { $reply.Error } else { 'worker 无结果' })) $(if($reply.ExitCode -eq 2){2}else{1})
+    }
+    if ([string]$reply.Result.schema -ne 'win-use-master/uia-query-result-v1' -or
+        [string]$reply.Result.page.schema -ne 'win-use-master/uia-page-v1') {
+        Stop-Hu 'UIA 限定读取返回了未知 schema；不会继续使用 continuation。' 2
+    }
+    return $reply.Result
+}
+
 function Get-UiaReadOptions([string[]] $Arguments) {
     $positionals = [Collections.Generic.List[string]]::new()
-    $exactId = ''; $summary = $false
+    $summary = $false
+    $json = $false
+    $values = [ordered]@{
+        '--id' = ''; '--id-prefix' = ''; '--type' = ''; '--name' = ''
+        '--name-prefix' = ''; '--within-id' = ''; '--limit' = ''; '--continuation' = ''
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     for ($i = 0; $i -lt $Arguments.Count; $i++) {
         $token = $Arguments[$i]
         if ($token -eq '--summary') { $summary = $true; continue }
-        if ($token -eq '--id') {
-            if ($exactId -or $i + 1 -ge $Arguments.Count -or
+        if ($token -eq '--json') { $json = $true; continue }
+        if ($values.Contains($token)) {
+            if (-not $seen.Add($token) -or $i + 1 -ge $Arguments.Count -or
                 [string]::IsNullOrWhiteSpace($Arguments[$i + 1]) -or $Arguments[$i + 1].StartsWith('--')) {
-                Stop-Hu 'uiaread --id 需要一个非空 AutomationId，且只能指定一次。' 2
+                Stop-Hu "uiaread $token 需要一个非空值，且只能指定一次。" 2
             }
-            $i++; $exactId = $Arguments[$i]; continue
+            $i++; $values[$token] = $Arguments[$i]; continue
         }
-        if ($token.StartsWith('--')) { Stop-Hu 'uiaread 只支持 --id 与 --summary；未知选项已拒绝。' 2 }
+        if ($token.StartsWith('--')) {
+            Stop-Hu 'uiaread 只支持 --id/--id-prefix/--type/--name/--name-prefix/--within-id/--limit/--continuation/--summary/--json；未知选项已拒绝。' 2
+        }
         $positionals.Add($token)
     }
-    if ($positionals.Count -lt 1 -or $positionals.Count -gt 2 -or
-        ($exactId -and $positionals.Count -gt 1)) {
-        Stop-Hu '用法: uiaread <target> [过滤词 | --id AutomationId] [--summary]；精确 ID 与模糊过滤不能混用。' 2
+    if ($values['--id'] -and $values['--id-prefix']) { Stop-Hu 'uiaread 的 --id 与 --id-prefix 不能同时使用。' 2 }
+    if ($values['--name'] -and $values['--name-prefix']) { Stop-Hu 'uiaread 的 --name 与 --name-prefix 不能同时使用。' 2 }
+    $allowedTypes = @('Text', 'Document', 'Edit', 'StatusBar', 'Header', 'HeaderItem')
+    $type = ''
+    if ($values['--type']) {
+        $type = @($allowedTypes | Where-Object { $_ -ieq $values['--type'] } | Select-Object -First 1)
+        if (-not $type.Count) { Stop-Hu "uiaread --type 只支持: $($allowedTypes -join ', ')。" 2 }
+        $type = $type[0]
+    }
+    $limit = 300
+    $limitExplicit = [bool]$values['--limit']
+    if ($limitExplicit -and (-not [int]::TryParse($values['--limit'], [ref]$limit) -or $limit -lt 1 -or $limit -gt 500)) {
+        Stop-Hu 'uiaread --limit 必须是 1..500 的整数。' 2
+    }
+    $continuation = $values['--continuation']
+    if ($continuation -and ($continuation.Length -gt 2048 -or $continuation -notmatch '^[A-Za-z0-9_-]+$')) {
+        Stop-Hu 'uiaread --continuation 格式无效；请从第一页重新查询。' 2
+    }
+    $hasQueryOptions = $seen.Count -gt 0
+    $structured = $hasQueryOptions -and -not ($seen.Count -eq 1 -and $seen.Contains('--id'))
+    if ($positionals.Count -lt 1 -or $positionals.Count -gt 2 -or ($hasQueryOptions -and $positionals.Count -gt 1)) {
+        Stop-Hu '用法: uiaread <target> [旧过滤词 | 限定查询选项] [--summary]；旧过滤词不能与限定查询混用。' 2
+    }
+    $query = [pscustomobject][ordered]@{
+        idExact = $values['--id']
+        idPrefix = $values['--id-prefix']
+        controlType = $type
+        nameExact = $values['--name']
+        namePrefix = $values['--name-prefix']
+        withinId = $values['--within-id']
     }
     return [pscustomobject]@{
-        Target = $positionals[0]; ExactId = $exactId; Summary = $summary
+        Target = $positionals[0]; ExactId = $values['--id']; Summary = $summary; Json = $json
         Filter = $(if ($positionals.Count -gt 1) { $positionals[1] } else { '' })
+        Structured = $structured; Query = $query; Limit = $limit; LimitExplicit = $limitExplicit
+        Continuation = $continuation
     }
 }
 
@@ -1001,15 +1320,17 @@ function Show-Usage {
 win-use-master — Windows 原生 app 的分层操控与可复现取证
 
 读取（不抢焦点）:
-  win.ps1 windows [关键词] [--all] [--raw]     # --all 含隐藏/最小化；--raw 连无标题消息窗也列
+  win.ps1 windows [关键词] [--all] [--raw] [--json] [--summary] # JSON 不回显过滤词；summary 隐去标题
   win.ps1 see <hwnd|pid|owner> [path] [--summary] # summary 不在终端展开 UIA 名称；也接受 --out path（仅进程内）
   win.ps1 shot <hwnd|owner> <path>
   win.ps1 shotfg <hwnd|owner> <path>          # 后台空图才短暂借焦点
   win.ps1 screen <path> [--window <target>] [--region x y w h]   # 桌面合成截图，交叉验证 PrintWindow
-  win.ps1 uia <hwnd|pid|owner> [--summary]       # summary 只打印类型统计
-  win.ps1 uiaread <hwnd|pid|owner> [过滤词 | --id AutomationId] [--summary] # id 精确且唯一
-  win.ps1 idle | frontmost
-  win.ps1 restore | minimize <hwnd|pid|owner>   # 用户要求时还原/最小化窗口，不激活；隐藏窗口拒绝
+  win.ps1 uia <hwnd|pid|owner> [--summary] [--json] # summary 只保留计数/类型
+  win.ps1 uiaread <target> [旧过滤词 | 查询选项] [--summary] [--json]
+    查询: [--id ID|--id-prefix P] [--type TYPE] [--name NAME|--name-prefix P]
+          [--within-id ID] [--limit 1..500] [--continuation TOKEN]
+  win.ps1 idle | frontmost [--json] [--summary]
+  win.ps1 restore | minimize <hwnd|pid|owner> [--json] [--summary] # 用户要求时才改变状态；不激活；隐藏窗口拒绝
 
 语义写入（通常不抢焦点）:
   win.ps1 uiaset <target> <eN|first> <text> [@uia.json]
@@ -1024,11 +1345,15 @@ win-use-master — Windows 原生 app 的分层操控与可复现取证
   win.ps1 op <target> <x> <y> <text> [@shot.png] [--replace] [shot out.png]
 
 应用与状态:
+  win.ps1 doctor [--json|--summary]             # 只读环境诊断；不构建、不启动、不修复
+  win.ps1 cache show|record <probe.json>|clear <key|--all> [--json] [--summary] # 建议性能力缓存；从不授权写操作
+  win.ps1 cleanup [--dry-run] [--json] [--summary] # 临时对象只读清单；本版本不提供 --apply
+  win.ps1 benchmark [--quick] [--no-cdp] [--json] [--summary] # 聚合性能基线；只读，无头 CDP fixture 可选
   win.ps1 open <显示名|进程名|exe路径> [--cdp port] [--relaunch] [--background] [--dry]
   win.ps1 com <ProgID> [--dry]                 # COM 身份核对：--dry 只读 64/32 位注册；否则新起私有实例核对 exe 后 Quit
   win.ps1 hud [毫秒] [文案] [corner|glow|plain]
-  probe.ps1 <显示名|进程名|exe路径>
-  node cdp.js <port> list|snapshot|find|wait|inspect|mouse|insert|press|shot|eval-read|eval-unsafe|act
+  probe.ps1 <显示名|进程名|exe路径> [--json] [--summary] [--no-cache]
+  node cdp.js <port> list|inspect ... [--json] [--summary] # 其它命令见 cdp.js help
 
 坐标：≤1 是归一化；>1 是窗口内物理像素；追加 @截图 使用图上像素；也可 eN@uia.json。
 screen 是桌面合成截图（含遮挡物/通知），只用于交叉验证与全屏取证；--region 用虚拟屏幕物理像素。
@@ -1042,10 +1367,18 @@ switch ($Command.ToLowerInvariant()) {
     { $_ -in @('help', '-h', '--help') } { Show-Usage; break }
 
     'windows' {
+        $unknownOptions = @($CommandArgs | Where-Object { $_.StartsWith('--') -and $_ -notin @('--all', '--raw', '--json', '--summary') })
+        $positionals = @($CommandArgs | Where-Object { -not $_.StartsWith('--') })
+        if ($unknownOptions.Count -or $positionals.Count -gt 1) {
+            Stop-Hu 'windows 只支持一个过滤词与 --all/--raw/--json/--summary；未知或多余参数已拒绝。' 2
+        }
         $all = $CommandArgs -contains '--all'
         $raw = $CommandArgs -contains '--raw'
-        $filter = @($CommandArgs | Where-Object { $_ -notin @('--all', '--raw') } | Select-Object -First 1)
+        $jsonOnly = $CommandArgs -contains '--json'
+        $summaryOnly = $CommandArgs -contains '--summary'
+        $filter = @($CommandArgs | Where-Object { $_ -notin @('--all', '--raw', '--json', '--summary') } | Select-Object -First 1)
         $hidden = 0; $folded = 0
+        $shownWindows = [Collections.Generic.List[object]]::new()
         foreach ($w in (Get-HuWindows | Sort-Object Owner, Hwnd)) {
             if ($filter.Count -and
                 $w.Owner.IndexOf($filter[0], [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
@@ -1055,10 +1388,17 @@ switch ($Command.ToLowerInvariant()) {
             # 202x56, 1x1). They are never a capture or UIA target; fold them even
             # under --all unless --raw asks for the complete list.
             if ($all -and -not $raw -and -not $w.Visible -and (($w.W -eq 0 -or $w.H -eq 0) -or ([string]::IsNullOrWhiteSpace($w.Title) -and ($w.W -lt 100 -or $w.H -lt 60)))) { $folded++; continue }
-            Write-Output (Format-Window $w)
+            $shownWindows.Add($w)
+            if (-not $jsonOnly) {
+                Write-Output $(if ($summaryOnly) { Format-HuWindowSummary $w } else { Format-Window $w })
+            }
         }
-        if ($hidden) { Write-Output "（已隐藏 $hidden 个系统残留/浮层窗口；加 --all 显示）" }
-        if ($folded) { Write-Output "（已折叠 $folded 个无标题的隐藏消息窗；加 --raw 全部显示）" }
+        if ($jsonOnly) {
+            Write-Output (ConvertTo-HuJson (New-HuWindowsReport @($shownWindows) $hidden $folded ([bool]$filter.Count) $all $raw $summaryOnly))
+        } else {
+            if ($hidden) { Write-Output "（已隐藏 $hidden 个系统残留/浮层窗口；加 --all 显示）" }
+            if ($folded) { Write-Output "（已折叠 $folded 个无标题的隐藏消息窗；加 --raw 全部显示）" }
+        }
         break
     }
 
@@ -1157,12 +1497,18 @@ switch ($Command.ToLowerInvariant()) {
 
     'uia' {
         $summaryOnly = $CommandArgs -contains '--summary'
-        $uiaArgs = @($CommandArgs | Where-Object { $_ -ne '--summary' })
-        if (-not $uiaArgs.Count) { Stop-Hu '用法: win.ps1 uia <hwnd|pid|owner> [--summary]' }
+        $jsonOnly = $CommandArgs -contains '--json'
+        $unknownOptions = @($CommandArgs | Where-Object { $_.StartsWith('--') -and $_ -notin @('--summary', '--json') })
+        $uiaArgs = @($CommandArgs | Where-Object { $_ -notin @('--summary', '--json') })
+        if ($unknownOptions.Count -or $uiaArgs.Count -ne 1) { Stop-Hu '用法: win.ps1 uia <hwnd|pid|owner> [--summary] [--json]；未知或多余参数已拒绝。' 2 }
         $w = Resolve-HuWindow $uiaArgs[0]
         $first = @(Get-UiaElements $w)
         Start-Sleep -Milliseconds 250
         $elements = @(Get-UiaElements $w)
+        if ($jsonOnly) {
+            Write-Output (ConvertTo-HuJson (New-HuUiaElementsReport $w $elements $first.Count $summaryOnly))
+            break
+        }
         Write-Output "UIA window=$(Format-Hwnd $w.Hwnd) pid=$($w.Pid) elements=$($elements.Count) first-pass=$($first.Count)$(if($summaryOnly){' mode=summary'})"
         if ($summaryOnly -and $elements.Count) {
             $types = @($elements | Group-Object ControlType | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', '
@@ -1178,9 +1524,17 @@ switch ($Command.ToLowerInvariant()) {
     'uiaread' {
         $options = Get-UiaReadOptions $CommandArgs
         $summaryOnly = $options.Summary
+        $jsonOnly = $options.Json
         $w = Resolve-HuWindow $options.Target
         $filter = $options.Filter
-        $elements = @(Get-UiaReadableElements $w -ExactId $options.ExactId)
+        $page = $null
+        if ($options.Structured) {
+            $result = Get-UiaReadableQueryResult $w $options.Limit $options.Query $options.Continuation
+            $elements = @($result.items)
+            $page = $result.page
+        } else {
+            $elements = @(Get-UiaReadableElements $w -ExactId $options.ExactId)
+        }
         if ($filter) {
             $elements = @($elements | Where-Object {
                 $_.Name.IndexOf($filter, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
@@ -1188,14 +1542,23 @@ switch ($Command.ToLowerInvariant()) {
                 $_.Value.IndexOf($filter, [StringComparison]::OrdinalIgnoreCase) -ge 0
             })
         }
+        if ($jsonOnly) {
+            Write-Output (ConvertTo-HuJson (New-HuUiaReadReport $w $elements $options $page $summaryOnly))
+            break
+        }
         $shownFilter = if ($summaryOnly -and $filter) { '<set>' } elseif ($filter) { '"' + $filter + '"' } else { '<none>' }
-        if ($options.ExactId) { $shownFilter = '<exact-id>' }
-        Write-Output "UIA read window=$(Format-Hwnd $w.Hwnd) pid=$($w.Pid) elements=$($elements.Count) filter=$shownFilter$(if($summaryOnly){' mode=summary'})"
+        if ($options.Structured) { $shownFilter = '<structured>' }
+        elseif ($options.ExactId) { $shownFilter = '<exact-id>' }
+        $pageText = if ($null -ne $page) { " page=$($page.offset):$($page.nextOffset)/$($page.matched) has-more=$([string]$page.hasMore).ToLowerInvariant()" } else { '' }
+        Write-Output "UIA read window=$(Format-Hwnd $w.Hwnd) pid=$($w.Pid) elements=$($elements.Count) filter=$shownFilter$pageText$(if($summaryOnly){' mode=summary'})"
         if ($summaryOnly -and $elements.Count) {
             $types = @($elements | Group-Object ControlType | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', '
             Write-Output "UIA read --summary 已省略名称/值（类型: $types，password=$(@($elements | Where-Object IsPassword).Count)）。"
         } elseif (-not $summaryOnly) {
             $elements | ForEach-Object { Write-Output (Format-UiaReadableElement $_) }
+        }
+        if ($null -ne $page -and $page.hasMore) {
+            Write-Output "continuation=$($page.continuation)（下一页必须重复相同查询条件；树变化会退出 2）"
         }
         if (-not $elements.Count) { Write-Output '→ 没有读到匹配的 Text/Document/Edit/Status/Header；改用截图或 app 自有接口。' }
         break
@@ -1553,8 +1916,18 @@ switch ($Command.ToLowerInvariant()) {
     }
 
     'idle' {
+        if (@($CommandArgs | Where-Object { $_ -notin @('--json', '--summary') }).Count) {
+            Stop-Hu 'idle 只支持 --json 与 --summary；未知参数已拒绝。' 2
+        }
+        $jsonOnly = $CommandArgs -contains '--json'; $summaryOnly = $CommandArgs -contains '--summary'
         $idle = [HuWin]::UserIdleSeconds(); $rawIdle = [HuWin]::IdleSeconds(); $fg = [HuWin]::ForegroundWindow().ToInt64(); $front = @((Get-HuWindows) | Where-Object { $_.Hwnd -eq $fg })
+        if ($jsonOnly) {
+            $frontWindow = if ($front.Count) { $front[0] } else { $null }
+            Write-Output (ConvertTo-HuJson (New-HuIdleReport $idle $rawIdle $fg $frontWindow $summaryOnly))
+            break
+        }
         $frontText = if ($front.Count) { "$($front[0].Owner) $(Format-Hwnd $fg) `"$($front[0].Title)`"" } else { Format-Hwnd $fg }
+        if ($summaryOnly -and $front.Count) { $frontText = "$($front[0].Owner) $(Format-Hwnd $fg) title=<redacted>" }
         $verdict = if ($idle -lt $script:IdleThresholdSeconds) { '🔴 用户在场；坐标写会先等，最多 15 秒' } else { '🟢 用户空闲；坐标写可进入借焦点流程' }
         $trail = if ($idle -ge 3599 -and $rawIdle -lt 10) { "；最近一次输入为本工具合成事件，原始空闲 $([Math]::Round($rawIdle,1))s" } else { '' }
         Write-Output ("用户键鼠空闲 {0:F1}s（阈值 {1:F0}s）{2} 前台: {3}`n{4}`n注：windows/shot/see/uia/CDP 等读操作不受此闸影响。" -f $idle,$script:IdleThresholdSeconds,$trail,$frontText,$verdict)
@@ -1562,8 +1935,17 @@ switch ($Command.ToLowerInvariant()) {
     }
 
     'frontmost' {
+        if (@($CommandArgs | Where-Object { $_ -notin @('--json', '--summary') }).Count) {
+            Stop-Hu 'frontmost 只支持 --json 与 --summary；未知参数已拒绝。' 2
+        }
+        $jsonOnly = $CommandArgs -contains '--json'; $summaryOnly = $CommandArgs -contains '--summary'
         $fg = [HuWin]::ForegroundWindow().ToInt64(); $front = @((Get-HuWindows) | Where-Object { $_.Hwnd -eq $fg })
-        if ($front.Count) { Write-Output (Format-Window $front[0]) } else { Write-Output (Format-Hwnd $fg) }
+        if ($jsonOnly) {
+            $frontWindow = if ($front.Count) { $front[0] } else { $null }
+            Write-Output (ConvertTo-HuJson (New-HuFrontmostReport $fg $frontWindow $summaryOnly))
+        } elseif ($front.Count) {
+            Write-Output $(if ($summaryOnly) { Format-HuWindowSummary $front[0] } else { Format-Window $front[0] })
+        } else { Write-Output (Format-Hwnd $fg) }
         break
     }
 
@@ -1638,22 +2020,56 @@ switch ($Command.ToLowerInvariant()) {
     # touch hidden/cloaked windows, and report the state before and after so the
     # agent can put the window back the way it found it.
     { $_ -in @('restore', 'minimize') } {
-        if (-not $CommandArgs.Count) { Stop-Hu "用法: win.ps1 $Command <hwnd|pid|owner>（只对最小化/可见窗口，不激活）" }
-        $w = Resolve-HuWindow $CommandArgs[0]
-        if ($w.Cloaked) { Stop-Hu "refused: 目标窗口 $(Format-Hwnd $w.Hwnd) 在其它虚拟桌面或被 DWM cloaked。" 2 }
-        if (-not $w.Visible) { Stop-Hu "refused: 目标窗口 $(Format-Hwnd $w.Hwnd) 是隐藏窗口（托盘态/未显示）；显示它是 app 自己的决定，请用户打开。" 2 }
+        $jsonOnly = $CommandArgs -contains '--json'; $summaryOnly = $CommandArgs -contains '--summary'
+        $unknownOptions = @($CommandArgs | Where-Object { $_.StartsWith('--') -and $_ -notin @('--json', '--summary') })
+        $stateArgs = @($CommandArgs | Where-Object { $_ -notin @('--json', '--summary') })
+        if ($script:Force -or $unknownOptions.Count -or $stateArgs.Count -ne 1) {
+            Stop-Hu "用法: win.ps1 $Command <hwnd|pid|owner> [--json] [--summary] [--dry]；未知或多余参数已拒绝。" 2
+        }
+        $w = Resolve-HuWindow $stateArgs[0] -Summary:$summaryOnly
+        if ($w.Cloaked -or -not $w.Visible) {
+            $reason = if ($w.Cloaked) { '目标窗口在其它虚拟桌面或被 DWM cloaked。' } else { '目标窗口是隐藏窗口（托盘态/未显示）；显示它是 app 自己的决定，请用户打开。' }
+            if ($jsonOnly) {
+                Write-Output (ConvertTo-HuJson (New-HuWindowStateReport $Command $w $null $null $null 'not-observed' 'refused' $summaryOnly $false))
+                [Console]::Error.WriteLine("refused: $reason")
+                exit 2
+            }
+            Stop-Hu "refused: 目标窗口 $(Format-Hwnd $w.Hwnd) $reason" 2
+        }
         $wanted = ($Command -eq 'minimize')
-        if ($script:Dry) { Write-Output "dry: $Command $(Format-Hwnd $w.Hwnd) currently=$(if ($w.Iconic) { 'min' } else { 'current' }) -> $(if ($wanted) { 'min' } else { 'current' })（SW_SHOW*NOACTIVE，不激活）"; break }
-        $before = Format-Window $w
+        if ($script:Dry) {
+            if ($jsonOnly) { Write-Output (ConvertTo-HuJson (New-HuWindowStateReport $Command $w $w $null $null 'not-observed' 'planned' $summaryOnly $true)) }
+            else { Write-Output "dry: $Command $(Format-Hwnd $w.Hwnd) currently=$(if ($w.Iconic) { 'min' } else { 'current' }) -> $(if ($wanted) { 'min' } else { 'current' })（SW_SHOW*NOACTIVE，不激活）" }
+            break
+        }
+        $beforeWindow = $w
+        $beforeText = Format-Window $w
         $foregroundBefore = [HuWin]::ForegroundWindow().ToInt64()
         $ok = if ($wanted) { [HuWin]::MinimizeNoActivate([long]$w.Hwnd) } else { [HuWin]::RestoreNoActivate([long]$w.Hwnd) }
         Start-Sleep -Milliseconds 150
         $after = @((Get-HuWindows) | Where-Object { $_.Hwnd -eq $w.Hwnd })
-        if (-not $ok -or -not $after.Count) { Stop-Hu "$Command 未生效：窗口拒绝了状态改变或已消失。before: $before" 1 }
+        if (-not $ok -or -not $after.Count -or [bool]$after[0].Iconic -ne $wanted) {
+            if ($jsonOnly) {
+                $afterWindow = if ($after.Count) { $after[0] } else { $null }
+                Write-Output (ConvertTo-HuJson (New-HuWindowStateReport $Command $beforeWindow $afterWindow $foregroundBefore $null 'not-observed' 'error' $summaryOnly $false))
+                [Console]::Error.WriteLine("$Command 未达到请求状态；效果未知，不要自动重试。")
+                exit 1
+            }
+            Stop-Hu "$Command 未达到请求状态：窗口拒绝了状态改变、已消失或回读不符。before: $beforeText" 1
+        }
         $foregroundAfter = [HuWin]::ForegroundWindow().ToInt64()
         $foregroundState = Get-HuForegroundTransition $foregroundBefore $foregroundAfter ([long]$w.Hwnd)
+        if ($jsonOnly) {
+            $status = if ($foregroundState -eq 'unexpected-target') { 'partial' } else { 'completed' }
+            Write-Output (ConvertTo-HuJson (New-HuWindowStateReport $Command $beforeWindow $after[0] $foregroundBefore $foregroundAfter $foregroundState $status $summaryOnly $false))
+            if ($status -eq 'partial') {
+                [Console]::Error.WriteLine("refused: $Command 已改变窗口状态，但目标意外取得前台；结果为 partial，未继续操作。")
+                exit 2
+            }
+            break
+        }
         Write-Output "$Command ok（SW_SHOW*NOACTIVE） foreground=$foregroundState before=$(Format-Hwnd $foregroundBefore) after=$(Format-Hwnd $foregroundAfter)"
-        Write-Output "before: $before"
+        Write-Output "before: $beforeText"
         Write-Output "after:  $(Format-Window $after[0])"
         if ($foregroundState -eq 'unexpected-target') {
             Stop-Hu "refused: $Command 已改变窗口状态，但目标意外取得前台；结果为 partial，未继续操作。" 2

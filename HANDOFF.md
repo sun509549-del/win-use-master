@@ -23,6 +23,12 @@
 - `npx skills add sun509549-del/win-use-master -g` 可发现并安装根目录 Skill。
 - PowerShell 7 + Node.js 24 是当前开发/CI 基线；Node.js 22+ 属支持范围。
 - `scripts/HuWin.dll` 是生成物，不提交；`win.ps1` 会在缺失或源码更新时重编译。
+- `win.ps1 doctor [--json|--summary]` 是 helper 加载前的只读诊断入口；它不得编译 helper、启停应用、写删文件或自动修复，输出不得含绝对用户路径、窗口标题和正文。
+- `capability-cache-v1` 只提供探测顺序提示。缓存管理在 helper 加载前独立分发，`show` 零写入，`record/clear` 必须显式调用；任何 UIA/CDP/L2 写路径都不得导入缓存或据其跳过实时安全检查。
+- `cleanup` 当前只能生成 dry-run 计划，生产实现不得含删除 primitive；`eligible` 不是用户授权。若未来开放 `--apply`，必须新增二次身份/路径扫描、TOCTOU 防护、逐项结果和单独授权，不能直接在现有 planner 后追加递归删除。
+- `benchmark` 只做聚合性能观察：`windows` 使用摘要读取，UIA 使用合成 provider，CDP 仅连接本次自启的临时无头 Edge。不得加入真实 app 写入、延长生产超时或跳过任何安全检查；PrintWindow 与 `insert/press` 仍待独立条件。
+- `uiaread` 的限定查询只在元数据过滤后读取当前页正文；continuation 绑定 HWND、PID/启动时间、查询、子树根和匹配树指纹，任何身份或树变化都必须退出 2 并从第一页重查。
+- 机器输出成功时 stdout 只能有一个 JSON 文档；unknown 用枚举和 `null`，不能压成 false/0/空串。窗口/UIA 敏感页使用 `--json --summary`，并记住 UIA summary 只改变呈现、不改变采集。
 - 收据 schema 已统一为 `win-use-master/receipt-v1`、`win-use-master/uia-map-v1`、`win-use-master/action-receipt-v1`。
 - 模糊窗口/PID 或 CDP target 命中多个候选时退出 2，不再按面积或列表顺序自动选第一个；写操作应优先使用明确 HWND/target id。
 - CDP `eval`/`eval-read` 已改为浏览器副作用检查；受控状态读取优先用脱敏 `inspect`。任意脚本写入只能显式使用 `eval-unsafe --allow-side-effects`，并生成不含原始表达式、`effect` 始终为 `unknown` 的动作回执。
@@ -38,6 +44,17 @@
 | `PROJECT_STATUS.md` | 当前已完成工作、功能/应用/测试矩阵、缺口、优先级与 v1.0 验收标准 |
 | `IMPLEMENTATION_PLAN.md` | 从当前 Beta 候选到 v1.0 的阶段、任务、依赖、质量门、风险与建议工期 |
 | `scripts/win.ps1` | 用户入口；窗口解析、截图、UIA worker 调度、坐标动作、安全闸和收据 |
+| `scripts/doctor.ps1` | 只读采集运行时、helper、CDP、schema、桌面、临时区和测试可运行性；输出 `doctor-report-v1` |
+| `scripts/doctor-core.ps1` | 不接触系统状态的 doctor 判定与格式化核心，供生产和 fixture 共同调用 |
+| `references/机器可读输出.md` | 版本化 JSON schema、unknown/null、summary 隐私与兼容规则 |
+| `scripts/capability-cache.ps1` | 建议缓存的显式 show/record/clear 入口；不加载桌面 helper |
+| `scripts/capability-cache-core.ps1` | 缓存白名单、路径边界、规范化、30 天/版本失效和原子写入 |
+| `references/能力缓存.md` | 缓存字段、禁用方式、非授权边界、输出 schema 与精确删除说明 |
+| `scripts/cleanup.ps1` / `cleanup-core.ps1` | 临时对象零写入规划入口与 namespace/manifest/到期/owner/reparse 判据 |
+| `references/临时数据治理.md` | cleanup dry-run 范围、manifest v1、eligible 含义和未来 apply 前置条件 |
+| `scripts/benchmark.ps1` / `benchmark-core.ps1` | windows/UIA/CDP 只读基线编排、聚合统计与临时无头 fixture 回收 |
+| `scripts/benchmark-uia-fixture.ps1` | 对实际 `Get-UiaReadablePage` 运行 100/300/1000 元素合成 provider |
+| `references/性能基线.md` | 测量口径、首版本机结果、隐私/副作用边界、20% p95 人工预警与延期项 |
 | `scripts/HuWin.cs` | Win32/DWM/SendInput/DPI/截图看门狗/输入尾迹/HUD 底层 |
 | `scripts/uia-worker.ps1` | 隔离的 UIA list/read/resolve/set/invoke worker，正文经 stdin 传递 |
 | `scripts/probe.ps1` | 只读应用发现：Win32/AppX、版本、架构、runtime、端口、协议、COM、窗口、UIA、完整性 |
@@ -71,7 +88,7 @@
 - worker 硬截止时间 6 秒。读超时表示 L1 本轮不可用；写超时表示动作可能已发生，写 `unknown` 收据、退出 2、禁止自动重试。
 - 密码/凭据字段必须拒绝；输入正文只能走 stdin，不能进入 worker 命令行或收据。
 - `eN` 是短期引用；长期档案保存 AutomationId/Name/ControlType/父子关系，不保存本轮 ref。
-- 定向读取必须显式 `uiaread <hwnd> --id <AutomationId>`：可读类型内区分大小写、必须唯一，在正文读取与数量截断前筛选。零/多匹配、失效或内容不可读退出 2。旧位置过滤词仍是读后子串匹配，不能当隐私隔离。
+- 敏感定向读取优先显式 `uiaread <hwnd> --id <AutomationId>`：可读类型内区分大小写、必须唯一，在正文读取与数量截断前筛选。组合查询可加精确/前缀 ID、类型、非敏感 Name、唯一子树和分页；continuation 必须绑定同一 HWND、查询和树指纹。零/多匹配、失效、树变化或内容不可读退出 2。旧位置过滤词仍是读后子串匹配，不能当隐私隔离。
 - `invoke` 必须先在只读 worker 中解析当前元素并应用共享风险规则，再由 action worker 重定位与复核；无标签 Button/Hyperlink/MenuItem fail-closed。
 
 ### CDP
@@ -122,8 +139,57 @@
 - `-TestId` 可精确复跑当前层的一个或多个测试；`-List`/`-DryRun` 不启动应用。调度器对子测试设置总截止时间，输出 UTF-8，并保留 0/1/2 语义。
 - 可选报告 schema 为 `win-use-master/test-report-v1`：记录版本、结果、耗时、输出行数和哈希，不保存原始测试日志或工作区绝对路径；已有报告默认拒绝覆盖。
 - `test-runner-contract.ps1` 验证分层选择、profile 显式授权、dry-run、实际 parse 执行、报告隐私和覆盖保护；CI 增加该契约与 `uia-timeout.ps1`。
-- 本地已通过完整 Contract 层：9/9，包括 parse、build、static、CI 配置、UIA read/timeout、window state、CDP ownership/action receipt。该结果仍不能替代 Desktop/Coordinate 回归；每个待发布提交还必须核对远程 CI 的目标 SHA。
-- CI 已拆成单次核心契约和 Node 22/24 CDP 矩阵；`checkout`/`setup-node` 固定到已审查的完整 commit，禁用不需要的包缓存，并由 `ci-contract.ps1` 守住只读权限、矩阵和 action 身份。本机覆盖 YAML/契约及 Node 24，Node 22 结论以目标提交的远程 job 为准。
+- 本地完整 Contract 层已通过 14/14，包含新增 benchmark 契约。该层仍不能替代 Desktop/Coordinate 回归；每个待发布提交还必须核对远程 CI 的目标 SHA。
+- CI 已拆成单次核心契约和 Node 22/24 CDP 矩阵；`checkout`/`setup-node` 固定到已审查的完整 commit，禁用不需要的包缓存，并由 `ci-contract.ps1` 守住只读权限、矩阵和 action 身份。上一公开基线两个 Node job 均已通过；本地未推送的 doctor 增量仍须在推送后重验目标 SHA。
+
+### 2026-09-14 只读 doctor 增量
+
+- 主入口在 `Import-HuCore` 前分发 `doctor`，所以 helper 缺失、过期或不可加载时只给建议，不触发现场编译。
+- `doctor-report-v1` 区分必需核心能力与可选 CDP/桌面能力；缺 Node/Chromium 不让 UIA/截图核心整体失败，锁屏只阻断桌面相关层。
+- 输出不保存绝对路径、窗口标题和正文。临时目录写权限刻意报告为 `unknown/not-probed`，因为以创建文件验证“可写”会破坏零写入承诺。
+- `tests/doctor-contract.ps1` 共享同一纯判定核心，用五类 fixture 验证退出码、能力降级、隐私和历史残留只告警不删除；同名前缀与“有效 manifest”分开计数，后者也不构成删除授权。端到端检查还守住提前分发和 helper 时间戳不变。
+
+### 2026-09-14 UIA 限定查询与安全分页
+
+- `uiaread` 新增 `--id-prefix`、`--type`、`--name`、`--name-prefix`、`--within-id`、`--limit` 和 `--continuation`；单独 `--id` 与旧位置过滤词仍走兼容路径。
+- 精确条件交给 UIA provider 求交，前缀条件在 worker 内只读元数据后过滤；只有当前页才调用 ValuePattern/TextPattern，密码正文继续不读。
+- `uia-continuation-v1` 不含原始 ID/Name/Value；除 schema 外只含查询哈希、匹配树哈希和偏移。调用方必须重复完全相同的查询；HWND、PID/启动时间、子树根 RuntimeId、候选 RuntimeId 顺序或元数据变化均在页正文读取前拒绝。它是只读游标，不是鉴权或加密签名；调用方必须按不透明值处理。
+- `--within-id` 必须唯一；RuntimeId 不可用时不签发后页 token。Name 查询值仍位于父命令行，因此只能用于非敏感 UI 标签。
+
+### 2026-09-15 统一机器可读输出
+
+- `windows`、`frontmost`、`idle`、`uia`、`uiaread` 新增 `--json`，各自使用独立 `*-result-v1` schema；默认文本输出不变。
+- `--summary` 将窗口标题设为 null、将 UIA items 置为空数组，同时保留状态、计数和 ControlType；过滤词和 UIA 查询值不复制进报告。
+- `frontmost` 区分 `resolved/unlisted/none`，`idle` 无法读取时使用 `unknown` 与 null 秒数，避免把未知当 false/0。
+- `probe-report-v1` 不复制查询值；summary 省略 app 身份/路径、进程与窗口明细、原始能力证据和警告正文，只保留状态、计数与 L0–L3 路由。未命中为 `not-found`，动态状态使用 `unknown/null`。
+- `window-state-result-v1` 覆盖 `restore/minimize` 的 `planned/completed/partial/error/refused`，记录状态回读、前台迁移和 `effect`；`--dry` 是 `planned/not-applied`。目标已改变但意外取得前台仍退出 2，不能被 JSON 包装成成功。
+- CDP `list/inspect` 新增 `--json/--summary`：列表摘要清空 targets；full URL 也删除 query/fragment 且永不输出 WebSocket URL；inspect 从采集层只保留角色/状态/正文长度，不复制 target/CSS 选择器。写命令继续只认 `action-receipt-v1`。
+- `tests/json-output-contract.ps1` 使用纯 fixture 与本地 HTTP fixture 检查 probe、窗口状态、五类窗口/UIA 报告和 CDP target；`cdp-action-receipt.ps1` 用无头 Edge验证 inspect full/summary 与参数误拼失败关闭。
+
+### 2026-09-15 建议性能力缓存
+
+- `win.ps1 cache show|record <probe-report.json>|clear <key|--all>` 在 `Import-HuCore` 前独立执行。默认 `show` 只读；probe 从不隐式写 cache，只有显式 `record` 才消费 resolved full `probe-report-v1`。
+- 默认路径是 `%LOCALAPPDATA%\win-use-master\capability-cache-v1.json`。测试覆盖的自定义路径只允许系统临时目录下准确的 `win-use-master-capability-cache-test-<GUID>\capability-cache-v1.json`，并要求测试开关。
+- 规范化后只留产品/版本/exe 名、窗口类、框架与 COM/CDP/UIA 观察；标题、UIA/DOM 正文、账号、命令行、路径、PID/端口和未知字段全部丢弃。30 天、未来时间、版本变化和无版本身份均失败关闭。
+- `probe --no-cache` 或 `WIN_USE_MASTER_CAPABILITY_CACHE=0` 禁止读取；后者同时让 record/clear 退出 2。fresh cache 只返回 `advisoryOrder`，仍须实时核对 owner/session、UIA 元素、桌面/UIPI/前台/遮挡/用户在场和风险规则。
+- `tests/capability-cache-contract.ps1` 在隔离临时目录验证字段白名单、失效、summary 隐私、show 文件哈希/时间戳不变、禁用零修改、精确清除，以及伪造 `trusted/allowWrite/L2` 不能绕过 CDP session；CI 核心 job 已加入该契约。
+
+### 2026-09-15 临时对象治理 dry-run
+
+- `win.ps1 cleanup [--dry-run] [--json] [--summary]` 在 helper 加载前运行；默认就是 dry-run，`--apply` 明确未开放并在扫描前退出 2。
+- 生产根固定为系统临时目录，仅枚举符合 `win-use-master-*` 受限命名的直接子目录。候选需要恰好一个 `temp-artifact-v1` manifest，artifact ID 等于目录叶名，生命周期不超过 30 天且已经到期。
+- owner 通过 PID + 启动时间识别；原 owner 活跃或状态未知拒绝，PID 已复用只说明原 owner 已消失。候选、manifest 或内部树出现 reparse point，目录不可读或超过 10,000 项也拒绝。
+- `cleanup-plan-v1` 不输出绝对路径、payload 内容或 manifest 未知字段；summary 清空 items。生产 cleanup 两个脚本没有删除 primitive，报告副作用计数固定为 0。
+- `tests/cleanup-contract.ps1` 覆盖有效过期、活动 owner、未过期、缺/错/错配 manifest 和非项目目录；对 fixture 全部文件做相对名/长度/时间戳/SHA-256 前后比对，确保所有 dry-run 与拒绝路径零修改。CI 核心 job 已加入该契约。
+
+### 2026-09-15 只读性能基线
+
+- `win.ps1 benchmark [--quick] [--no-cdp] [--json] [--summary]` 在 helper 自动加载前分发；helper 必须已构建，基线本身不会触发编译。
+- `windows` 分别记录第一次和后续全新 PowerShell 进程，文档明确后者只可能受 OS 缓存影响，不伪称进程内 warm。UIA 通过 AST 加载实际 `Get-UiaReadablePage`，对 100/300/1000 元素合成 provider 返回前 50 项。
+- 默认 CDP 只启动唯一临时 profile 的无头 Edge，对空白页执行 `inspect auto body --json --summary`；只按完整 profile 路径识别并终止本次进程，验证精确 temp 根后回收。`--no-cdp` 不创建临时目录。
+- `performance-report-v1` 只有 min/p50/p95/max/mean 聚合，不保存原始样本、子命令输出、窗口数量/标题、正文、路径、selector、target、PID 或端口；副作用字段报告窗口摘要读取、浏览器启动、所见/剩余 owner 进程和 temp 目录回收。
+- 本机标准档已完成：windows first 1031.350 ms，repeated p50/p95 843.120/856.627 ms；UIA 100/300/1000 p95 为 25.493/88.213/248.100 ms，均 0/5 超 6000 ms；CDP inspect p50/p95 95.233/100.076 ms。它是单机回归参考，不是 SLA。
+- `tests/benchmark-contract.ps1` 守住 nearest-rank、schema/隐私、quick/no-CDP 仓库零修改、参数预拒绝，以及 UIA/CDP 生产超时常量不被放宽。PrintWindow 和 CDP 写性能未执行。
 
 ### 2026-09-10 本地精确读取增量
 
@@ -151,7 +217,7 @@ pwsh -NoProfile -File tests/run-tests.ps1 -Tier Contract
 
 ### 有活动交互桌面的本机回归
 
-`uia-read-contract.ps1` 不启动 app、不访问桌面：对实际生产函数使用 provider 替身，检查迟于第 300 项的目标、重复 ID、相似 ID、Name/Value 碰撞、密码、失效与参数错误；不是实机 UIA 兼容性的替代。`smoke.ps1` 另验证真实 WinForms → CLI → 隔离 worker 的精确读取和摘要输出。
+`uia-read-contract.ps1` 不启动 app、不访问桌面：对实际生产函数使用 provider 替身，检查迟于第 300 项的目标、精确/前缀/类型组合、唯一子树、分页推进、树/窗口变化失效、重复 ID、密码、正文延迟读取与参数错误；不是实机 UIA 兼容性的替代。`smoke.ps1` 另验证真实 WinForms → CLI → 隔离 worker 的精确读取和摘要输出；新版限定查询仍待独立桌面时段复验。
 
 ```powershell
 pwsh -NoProfile -File tests/run-tests.ps1 -Tier Desktop
@@ -195,12 +261,13 @@ pwsh -NoProfile -File tests/wps-et-com-profile.ps1
 
 ## 8. 当前待办
 
-1. P1：剪映 CEF 是否接受 `--remote-debugging-port`、「版本更新」弹窗可见态截图；都需要用户授权重启或显示，不得自行 ShowWindow。
-2. P1：QQ 聊天输入框的 UIA/CDP 写路径未测（停手线附近，需用户指定一个可逆目标）。
-3. P1：制作经脱敏的真实 Windows 案例；架构图已完成并由静态契约守护。
-4. P2：微信是 Qt5 空树 + 无 CDP 的典型，L2 写路径（需用户指定可逆目标）能补上“只有坐标可走”的第一个真实样本。
-5. P2：Blender 安装后按 Mac 的 bpy 路线补 L0 CLI 创作型案例。
-6. P2：继续把本项目特有、可复现且不能编码消除的失败过程整理进 `踩坑实录.md`；设置语义树的隐私暴露已作为第 22 条落档。
+1. M2-06 第二阶段：专用空闲桌面测 PrintWindow；CDP `insert/press` 另建一次性授权、隔离且可撤回的写基线。
+2. M2-05 后续评审：`--apply` 仍未授权且未实现；先设计二次扫描/TOCTOU/部分失败契约，再单独决定是否开放。
+3. P1：剪映 CEF 是否接受 `--remote-debugging-port`、「版本更新」弹窗可见态截图；都需要用户授权重启或显示，不得自行 ShowWindow。
+4. P1：QQ 聊天输入框的 UIA/CDP 写路径未测（停手线附近，需用户指定一个可逆目标）。
+5. P1：制作经脱敏的真实 Windows 案例；架构图已完成并由静态契约守护。
+6. P2：微信是 Qt5 空树 + 无 CDP 的典型，L2 写路径（需用户指定可逆目标）能补上“只有坐标可走”的第一个真实样本。
+7. P2：Blender 安装后按 Mac 的 bpy 路线补 L0 CLI 创作型案例。
 
 ## 9. 常见误判
 

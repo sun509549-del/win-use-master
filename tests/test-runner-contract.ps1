@@ -30,7 +30,7 @@ try {
     Assert-Contract ([string]$contract.schema -eq 'win-use-master/test-report-v1') '报告 schema 不匹配'
     Assert-Contract ([string]$contract.tier -eq 'Contract' -and [bool]$contract.dryRun) '报告 tier/dryRun 不匹配'
     Assert-Contract ([int]$contract.summary.executed -eq 0) 'dry-run 不得执行测试'
-    Assert-Contract ([int]$contract.summary.planned -eq 9) 'Contract 层计划数量漂移'
+    Assert-Contract ([int]$contract.summary.planned -eq 14) 'Contract 层计划数量漂移'
     Assert-Contract (@($contract.tests | Where-Object { $_.status -ne 'planned' }).Count -eq 0) 'dry-run 状态必须全部为 planned'
     $contractRaw = Get-Content -LiteralPath $contractPath -Raw -Encoding utf8
     Assert-Contract (-not $contractRaw.Contains($root, [StringComparison]::OrdinalIgnoreCase)) '报告不得包含工作区绝对路径'

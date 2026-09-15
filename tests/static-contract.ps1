@@ -9,9 +9,15 @@ function Assert-Contract([bool] $Condition, [string] $Message) {
 
 $requiredFiles = @(
     'README.md', 'SKILL.md', 'HANDOFF.md', 'PROJECT_STATUS.md', 'IMPLEMENTATION_PLAN.md', 'LICENSE', 'cdp.js',
-    'config/risk-actions.json', 'assets/architecture.svg',
-    'scripts/win.ps1', 'scripts/uia-worker.ps1', 'scripts/cdp.js', 'scripts/HuWin.cs',
+    'config/risk-actions.json', 'assets/architecture.svg', 'references/机器可读输出.md', 'references/能力缓存.md', 'references/临时数据治理.md', 'references/性能基线.md',
+    'scripts/win.ps1', 'scripts/doctor.ps1', 'scripts/doctor-core.ps1', 'scripts/capability-cache.ps1', 'scripts/capability-cache-core.ps1',
+    'scripts/cleanup.ps1', 'scripts/cleanup-core.ps1', 'scripts/benchmark.ps1', 'scripts/benchmark-core.ps1', 'scripts/benchmark-uia-fixture.ps1',
+    'scripts/uia-worker.ps1', 'scripts/cdp.js', 'scripts/HuWin.cs',
     'tests/parse-contract.ps1', 'tests/run-tests.ps1', 'tests/test-runner-contract.ps1', 'tests/ci-contract.ps1',
+    'tests/doctor-contract.ps1', 'tests/json-output-contract.ps1', 'tests/capability-cache-contract.ps1', 'tests/cleanup-contract.ps1', 'tests/benchmark-contract.ps1',
+    'tests/fixtures/doctor/ready.json', 'tests/fixtures/doctor/missing-node.json',
+    'tests/fixtures/doctor/stale-helper.json', 'tests/fixtures/doctor/secure-desktop.json',
+    'tests/fixtures/doctor/historical-leftovers.json',
     'tests/settings-profile.ps1', 'tests/uia-read-contract.ps1', 'tests/window-state-contract.ps1'
 )
 foreach ($relative in $requiredFiles) {
@@ -24,6 +30,25 @@ Assert-Contract ($skill.Length -le 6000) "SKILL.md 超过 6000 字符（当前 $
 Assert-Contract ($skill -match '2 绝不能当成功') 'SKILL.md 丢失退出码 2 的安全约定'
 Assert-Contract ($skill -match 'see <hwnd>.*--summary') 'SKILL.md 丢失敏感窗口的 see --summary 约定'
 Assert-Contract ($skill -match 'uia/uiaread --summary') 'SKILL.md 丢失敏感 UIA 读取的摘要约定'
+Assert-Contract ($skill -match 'probe\.ps1.*--json.*--summary') 'SKILL.md 丢失 probe 机器可读入口'
+
+$winEntrypoint = Get-Content -LiteralPath (Join-Path $root 'scripts/win.ps1') -Raw -Encoding utf8
+$probeEntrypoint = Get-Content -LiteralPath (Join-Path $root 'scripts/probe.ps1') -Raw -Encoding utf8
+$cdpEntrypoint = Get-Content -LiteralPath (Join-Path $root 'scripts/cdp.js') -Raw -Encoding utf8
+Assert-Contract ($winEntrypoint -match 'win-use-master/window-state-result-v1') '窗口状态结果 schema 未进入生产入口'
+Assert-Contract ($probeEntrypoint -match 'win-use-master/probe-report-v1') 'probe 结果 schema 未进入生产入口'
+Assert-Contract ($winEntrypoint -match "Command -iin @\('doctor','cache','cleanup','benchmark'\)") 'doctor/cache/cleanup/benchmark 必须在桌面 helper 加载前独立分发'
+Assert-Contract ($cdpEntrypoint -match 'win-use-master/cdp-targets-result-v1' -and $cdpEntrypoint -match 'win-use-master/cdp-inspect-result-v1') 'CDP list/inspect schema 未进入生产入口'
+$cacheCore = Get-Content -LiteralPath (Join-Path $root 'scripts/capability-cache-core.ps1') -Raw -Encoding utf8
+Assert-Contract ($cacheCore -match 'trustedForAuthorization = \$false' -and $cacheCore -match 'CapabilityCacheRetentionDays = 30') '能力缓存必须明确不可信且 30 天失效'
+Assert-Contract ($cdpEntrypoint -notmatch 'capability-cache|CapabilityCache') 'CDP 写入口不得读取能力缓存'
+$cleanupEntrypoint = Get-Content -LiteralPath (Join-Path $root 'scripts/cleanup.ps1') -Raw -Encoding utf8
+$cleanupCore = Get-Content -LiteralPath (Join-Path $root 'scripts/cleanup-core.ps1') -Raw -Encoding utf8
+Assert-Contract (($cleanupEntrypoint + $cleanupCore) -match 'win-use-master/cleanup-plan-v1') 'cleanup dry-run schema 未进入生产入口'
+Assert-Contract (($cleanupEntrypoint + $cleanupCore) -notmatch '(?i)\b(Remove-Item|Directory\]::Delete|File\]::Delete)\b') 'cleanup 首版生产代码不得包含删除 primitive'
+$benchmarkEntrypoint = Get-Content -LiteralPath (Join-Path $root 'scripts/benchmark.ps1') -Raw -Encoding utf8
+Assert-Contract ($benchmarkEntrypoint -match 'win-use-master/performance-report-v1') '性能报告 schema 未进入生产入口'
+Assert-Contract ($benchmarkEntrypoint -match 'writeCommandsBenchmarked = 0' -and $benchmarkEntrypoint -match 'realApplicationsStarted = 0' -and $benchmarkEntrypoint -notmatch '(?i)SendInput|--allow-side-effects|eval-unsafe') '性能入口不得绕过安全闸或执行写基线'
 
 $compat = Get-Content -LiteralPath (Join-Path $root 'cdp.js') -Raw -Encoding utf8
 Assert-Contract ($compat.Length -le 512) '根目录 cdp.js 应保持轻量兼容入口'

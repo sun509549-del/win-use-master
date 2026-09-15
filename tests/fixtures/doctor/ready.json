@@ -1,0 +1,37 @@
+{
+  "platform": { "isWindows": true, "name": "Windows" },
+  "powershell": { "version": "7.6.0", "major": 7, "edition": "Core", "executionPolicy": "RemoteSigned" },
+  "helper": {
+    "sourceExists": true,
+    "dllExists": true,
+    "stale": false,
+    "loadable": true,
+    "loadError": "none",
+    "compilerAvailable": true,
+    "ready": true,
+    "status": "ready"
+  },
+  "node": { "installed": true, "version": "24.9.0", "major": 24, "supported": true },
+  "browser": { "discovered": [{ "name": "edge", "source": "ProgramFiles", "version": "153.0.0.0" }] },
+  "contracts": {
+    "riskPolicyValid": true,
+    "riskPolicySchema": "win-use-master/risk-actions-v1",
+    "receiptSchemasReadable": true,
+    "receiptSchemas": [
+      "win-use-master/receipt-v1",
+      "win-use-master/action-receipt-v1",
+      "win-use-master/uia-map-v1",
+      "win-use-master/cdp-session-v1",
+      "win-use-master/test-report-v1"
+    ]
+  },
+  "desktop": { "inputDesktop": "interactive", "lockedOrSecure": false, "integrityRid": 8192, "integrityName": "medium" },
+  "temporaryStorage": {
+    "directoryExists": true,
+    "writeStatus": "writable",
+    "writeProbePerformed": false,
+    "historicalCandidates": 0,
+    "validManifestHistorical": 0,
+    "expiredSessions": 0
+  }
+}

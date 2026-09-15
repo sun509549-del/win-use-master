@@ -1,6 +1,6 @@
 # win-use-master 项目状态与完善路线
 
-> 状态快照：2026-09-14
+> 状态快照：2026-09-15
 > 适用对象：项目维护者、贡献者、评审者，以及后续接手的开发者
 > 说明：本文区分“已经实现”“本地已验证”和“远程/桌面发布门已通过”，不能把局部测试成功等同于完整发布通过。
 
@@ -55,6 +55,11 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 - 支持通过 `npx skills add sun509549-del/win-use-master -g` 发现和安装根目录 Skill。
 - Windows CI 已建立，负责 PowerShell/JavaScript 解析、C# helper 构建、静态发布契约、UIA 契约和 Node 22/24 无头 CDP 回归；每个待发布提交仍须核对远程目标 SHA。
 - `scripts/HuWin.dll` 被定义为可再生构建产物，不提交仓库；源码变更或 DLL 缺失时由脚本重编译。
+- `win.ps1 doctor [--json|--summary]` 会在 helper 加载前执行零写入诊断，报告运行时、构建、CDP、schema、桌面、完整性、临时残留和测试层状态；它不构建、不启停应用、不删除或修复。
+- `probe.ps1` 已提供 `probe-report-v1` 与隐私摘要；查询值永不进入 JSON，summary 只保留状态、计数和 L0–L3 路由。
+- `capability-cache-v1` 已实现为建议性、显式写入的本地缓存：`cache show/record/clear` 独立于桌面 helper，`probe --no-cache` 可禁用读取；30 天、版本变化和字段白名单均为失败关闭，缓存不进入任何写授权链。
+- `cleanup` 已实现零写入 dry-run 首版：只扫描系统临时根的项目直接子目录，按唯一 manifest、到期、原 owner、reparse point 和枚举上限给出 `cleanup-plan-v1`；`--apply` 尚未开放并在扫描前拒绝。
+- `benchmark` 已实现聚合性能基线：明确区分首次/后续新进程，使用 100/300/1000 元素合成 UIA provider，并可在项目自有临时无头 Edge 上只读 `inspect`；报告不含原始样本、路径、标题、正文、selector、PID 或端口。
 - 根目录 `cdp.js` 只保留兼容转发，真实实现集中在 `scripts/cdp.js`，减少双份实现漂移。
 
 ### 3.2 Windows 原生底层
@@ -62,7 +67,7 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 - 用 `scripts/HuWin.cs` 封装窗口枚举、DWM 状态、DPI、前台窗口、输入桌面、空闲时间、命中测试、截图看门狗、`SendInput` 和 HUD。
 - 支持普通、最小化、隐藏和 cloaked 窗口状态；默认列表会折叠 Qt/CEF 产生的大量无标题消息窗，`--raw` 才展示原始枚举。
 - 模糊窗口选择命中多个候选时不再猜测，返回退出码 2，要求调用者改用明确 HWND。
-- `restore`/`minimize` 使用不主动激活的窗口状态请求，并对前台迁移分类，避免把“Windows 自己释放了前台”误报成“工具激活了目标”。
+- `restore`/`minimize` 使用不主动激活的窗口状态请求，并对前台迁移分类；`window-state-result-v1` 区分 dry-run、完成、partial、拒绝与未知效果，并在调用后回读请求状态。
 - 支持 AUMID/Store 应用启动、普通程序后台显示请求、COM 注册视图与进程身份核对。
 
 ### 3.3 L0：应用原生接口与 CDP
@@ -73,6 +78,7 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 - `open --cdp` 在校验后签发 30 分钟会话清单，绑定端口、进程身份和目标页；每个写命令还会重新授权。
 - 多个 page target 存在时禁止自动选择；调用者必须指定 target id。
 - 已提供 `list/snapshot/find/wait/inspect/mouse/insert/press/shot/eval-read/eval-unsafe/act` 等 CDP 能力。
+- CDP `list/inspect` 已提供版本化 JSON/摘要；target URL 始终移除 query/fragment，摘要不打印标题、URL、target 选择词或 CSS selector，`inspect` 从采集层只读取状态与正文长度。
 - 普通 `eval`/`eval-read` 只允许受控读取；有副作用的表达式必须显式使用 `eval-unsafe --allow-side-effects`，且效果一律记为 `unknown`。
 - CDP 对 HTTP、WebSocket、单次请求和动作脚本设置截止时间；写入超时后不会自动重试非幂等动作。
 - DOM 动作会检查按钮文本、ARIA、id/name 和表单提交语义，发送、支付、删除等最终动作在输入前拒绝。
@@ -85,6 +91,9 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 - UIA map 生成短引用 `eN`，动作前会用稳定语义重新定位，避免把旧坐标当成长期身份。
 - `uiaread --id` 会先用 UIA `PropertyCondition` 精确筛选 AutomationId，再读取 Name/Value；匹配为零、多个、过期或 provider 异常均返回 2。
 - 精确 ID 匹配区分大小写，并在最终读取前再次验证 AutomationId，降低元素树变化造成的误读。
+- `uiaread` 已增加 ID/Name 精确或前缀、ControlType、唯一 `--within-id` 子树和 `--limit` 分页组合；Value/Text 只在元数据过滤后按页读取。
+- `uia-continuation-v1` 除 schema 外只携带查询/树哈希和偏移，绑定 HWND、PID/启动时间、子树根、候选 RuntimeId 顺序与元数据指纹；匹配树或窗口身份变化时退出 2，不把旧 token 当持久元素引用。
+- `doctor`、`probe`、`windows`、`frontmost`、`idle`、`uia`、`uiaread` 和窗口状态结果已提供版本化 JSON；摘要不复制查询值并隐去身份/窗口标题/UIA items，unknown 使用枚举与 `null` 明示。
 - `--summary` 只向终端输出数量和类型统计，避免窗口标题、过滤词和控件正文直接进入会话日志。
 - 密码控件不返回 Value。旧的模糊过滤接口保留兼容，但它仍会先读取最多 300 个元素，因此不应作为敏感页面的隐私隔离手段。
 
@@ -127,11 +136,15 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 | 窗口 | `windows`、`frontmost`、`idle` | 枚举和判断前台/用户活动 | 否 |
 | 窗口状态 | `restore`、`minimize` | 请求还原或最小化并验证前台变化 | 会改变窗口状态 |
 | 截图 | `shot`、`shotfg`、`screen` | 后台窗口、短借前台或桌面合成取证 | `shotfg` 可能短借前台 |
-| UIA 读取 | `uia`、`uiaread` | 读取元素树、摘要或精确 AutomationId | 否 |
+| UIA 读取 | `uia`、`uiaread` | 元素树、摘要、组合限定、子树与安全分页 | 否 |
 | UIA 写入 | `uiaset`、`invoke` | ValuePattern 写入或 InvokePattern 调用 | 是，受风险规则限制 |
 | 坐标输入 | `clickin`、`hoverin`、`scrollin`、`type`、`key`、`op` | UIA/CDP 不可用时的受控兜底 | 是，必须通过 L2 闸门 |
 | 应用入口 | `open`、`com` | 启动、CDP 授权、COM 身份检查 | 启动会改变进程状态 |
 | 能力发现 | `probe` | 只读探测应用控制面 | 否 |
+| 环境诊断 | `doctor` | 脱敏文本/摘要或 `doctor-report-v1` JSON | 否；不构建、不修复 |
+| 能力缓存 | `cache show/record/clear` | 查看、显式记录或精确清除低敏感探测观察 | `show` 否；其余仅改本地 cache，永不授权 app 写入 |
+| 临时治理 | `cleanup [--dry-run]` | 脱敏列出可清理/拒绝候选及原因 | 否；`--apply` 未开放 |
+| 性能基线 | `benchmark [--quick] [--no-cdp]` | `performance-report-v1` 聚合 windows/UIA/CDP inspect p50/p95 | 不写真实 app；默认只写并回收无头 Edge 临时 profile，`--no-cdp` 零临时目录 |
 | 辅助显示 | `hud` | 展示动作状态 | 仅界面提示 |
 | CDP | `list`、`snapshot`、`find`、`wait`、`inspect`、`shot` | 浏览器/Chromium 只读观察 | 否 |
 | CDP 动作 | `mouse`、`insert`、`press`、`act`、`eval-unsafe` | 经 owner/session/风险校验的 DOM 操作 | 是 |
@@ -168,30 +181,41 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 | 测试 | 覆盖范围 | 运行条件 |
 |---|---|---|
 | `tests/parse-contract.ps1` | 仓库内 PowerShell 与 JavaScript 统一语法检查 | 无桌面；JavaScript 检查需要 Node |
+| `tests/doctor-contract.ps1` | 五类环境 fixture、JSON/摘要、隐私、零副作用和提前分发 | 无桌面 |
+| `tests/json-output-contract.ps1` | probe/窗口状态/窗口/UIA/CDP target schema、unknown/null、URL 清理、摘要脱敏和查询值不回显 | 无桌面 + 本地 HTTP fixture |
+| `tests/capability-cache-contract.ps1` | 字段白名单、TTL/版本失效、摘要隐私、show 零写入、禁用开关、精确清除与伪造缓存不能授权 | 无桌面隔离临时目录 |
+| `tests/cleanup-contract.ps1` | temp namespace、manifest、到期/owner/reparse 判据、输出隐私、逐文件零修改和 apply 拒绝 | 无桌面隔离临时目录 |
+| `tests/benchmark-contract.ps1` | p50/p95、windows/UIA quick、聚合隐私、仓库零修改、参数预拒绝和生产超时不变量 | 无桌面；`--no-cdp` |
 | `tests/run-tests.ps1` | Contract/Desktop/Coordinate/Profiles 分层调度、截止时间和结构化报告 | 取决于所选层；默认 Contract |
 | `tests/test-runner-contract.ps1` | 层选择、显式 profile、dry-run/实际执行、报告隐私和覆盖保护 | 无桌面 |
 | `tests/ci-contract.ps1` | 只读权限、action 完整 SHA、Node 22/24 矩阵、禁用无用缓存 | 无桌面 |
 | `tests/static-contract.ps1` | 发布文件、风险规则、README 链接、SVG 安全、Skill 体积 | 无桌面 |
 | `tests/cdp-ownership.ps1` | 错误端口 owner 拒绝、正确 owner 接受 | 本地 fixture |
-| `tests/cdp-action-receipt.ps1` | 动作收据、脱敏、失败、超时、会话重授权、临时进程清理 | Edge/Node |
-| `tests/uia-read-contract.ps1` | 精确 ID 预筛选、唯一性、正文隔离、参数契约 | 无桌面 provider fixture |
+| `tests/cdp-action-receipt.ps1` | `inspect` JSON/摘要、动作收据、脱敏、失败、超时、会话重授权、临时进程清理 | 无头 Edge/Node |
+| `tests/uia-read-contract.ps1` | 精确/前缀/类型/子树组合、正文延迟读取、分页与 continuation 失效 | 无桌面 provider fixture |
 | `tests/uia-timeout.ps1` | UIA worker 卡死、终止、unknown 收据 | 无桌面 fixture |
-| `tests/window-state-contract.ps1` | 前台迁移分类和“新激活”判定 | 无桌面 |
+| `tests/window-state-contract.ps1` | 前台迁移分类、“新激活”判定、窗口状态 JSON/摘要 | 无桌面 |
 | `tests/capture-recovery.ps1` | sibling recovery、截图收据 | 活跃桌面/fixture |
 | `tests/smoke.ps1` | 构建、窗口、截图、UIA、安全闸、可选真实坐标输入 | 活跃且空闲的交互桌面 |
 | 六个 `*-profile.ps1` | 真实应用档案 | 安装对应应用并满足各自隔离条件 |
 
 ### 6.2 本批已获得的证据
 
-- 统一调度器的完整 Contract 层已通过 9/9：parse、build、static、CI 配置、UIA read、window state、CDP ownership、CDP action receipt、UIA timeout。
+- 统一调度器的完整 Contract 层已通过 14/14：parse、build、doctor、static、CI 配置、JSON output、capability cache、cleanup、benchmark、UIA read、window state、CDP ownership、CDP action receipt、UIA timeout。
+- `doctor` 的干净、缺 Node、helper 过期、安全桌面和历史残留五类 fixture 已通过；端到端检查确认主入口在 helper 自动构建前分发，JSON/摘要不含绝对路径，冲突选项退出 2。
+- JSON output fixture 已通过：`probe`、窗口状态、五类窗口/UIA 报告与 CDP target 均守住 schema、unknown/null、URL 清理、摘要脱敏和参数误拼失败关闭；`windows/frontmost/idle`、`probe` 未命中和 CDP list 均有端到端 JSON 解析。
+- capability cache 契约已通过：缓存记录只保留低敏感白名单，30 天与版本变化失效，show 不改文件，summary 不列 entry，禁用开关阻断读写；伪造 `trusted/allowWrite/L2` 字段被丢弃且不能绕过 CDP session。
+- cleanup 契约已通过：只有有效过期 manifest 且原 owner 不活跃的安全树会标为 eligible；活动 owner、未到期、缺失/错误/错配 manifest 均拒绝。full/summary/default dry-run 与 `--apply`/非法根拒绝前后，fixture 逐文件指纹一致。
+- performance 契约已通过：quick/no-CDP 报告含 windows 首次/重复进程与 100/300/1000 UIA 聚合统计，stdout/privacy/副作用字段和仓库逐文件零修改均符合契约；标准档另以临时无头 Edge 完成 5 次 CDP inspect，并确认 profile 与专属 Edge 进程无残留。首版数值见 [`references/性能基线.md`](references/性能基线.md)。
+- UIA 限定查询 fixture 已通过：精确条件由 provider 求交，前缀与子树只在元数据阶段筛选，页外元素不读取 Value；continuation 能稳定前进，并在树指纹或 HWND 变化时先拒绝再读正文。
 - 调度器契约已验证显式 profile、`-TestId` 子集、dry-run、真实 parse 执行、报告不含绝对路径/原始输出，以及已有报告默认拒绝覆盖。
 - CI 已拆为核心 job 与 Node 22/24 CDP 矩阵，第三方 action 固定到完整 commit 并关闭不需要的包缓存；本机 Node 24 与 YAML/静态契约已通过，Node 22 结论以目标提交的远程 Actions 为准。
 - PowerShell 语法解析、JavaScript 语法解析和差异空白检查通过。
 - 静态发布契约与 Skill quick validation 通过。
 - UIA 精确读取契约通过。
-- 窗口状态迁移契约通过。
+- 窗口状态迁移与版本化结果契约通过；真实前台窗口的 `minimize --dry --json --summary` 返回 `planned/not-applied`，未改变窗口。
 - CDP owner 校验通过。
-- CDP 动作收据完整回归通过，包括约 10 秒的写超时、超时后重新授权和临时 profile 清理断言。
+- CDP 动作收据完整回归通过，包括 inspect full/summary、约 9 秒的写超时、超时后重新授权和临时 profile 清理断言。
 - UIA 超时测试已验证读/写 provider 卡住时均在约 7 秒内退出，并把写入效果标为未知。
 - 受控 WinForms smoke 的精确 AutomationId 读取断言曾通过；随后修复了 invoke 后立即读状态和 restore 判定两个不稳定假设。
 
@@ -207,9 +231,8 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 
 截至本快照：
 
-- 本次候选基于 `3ea1925` 后续开发，覆盖 CI、主命令、UIA worker、文档、CDP 收据、smoke、UIA 超时和分层测试调度。
-- 候选新增两份项目规划文档，以及 parse、CI 配置、调度器、调度器契约、设置档案、UIA 精确读取和窗口状态七个测试文件。
-- 本地无桌面 Contract 层已经 9/9 通过；Desktop、Coordinate 和设置档案复验仍是独立发布门，不能由云 CI 替代。
+- 当前本地候选基于上一份已通过 Node 22/24 远程 CI 的公开基线，新增只读 `doctor`、UIA 限定查询/安全分页、M2-03 机器可读结果、M2-04 建议性能力缓存、M2-05 cleanup dry-run 与 M2-06 只读性能基线、对应 fixture 和文档；本批尚未提交或推送。
+- 本地无桌面 Contract 层已经 14/14 通过。Desktop、Coordinate 和设置档案复验仍是独立发布门，不能由云 CI 替代。
 - 对外说明应区分：“代码已经实现”“本地契约已验证”“目标提交远程 CI 已验证”“真实桌面已验证”四种状态。
 - 发布状态和远程 SHA 以 Git 历史及 GitHub Actions 为准；本文不保存容易过期的“未跟踪文件数量”或“最新提交 SHA”。
 
@@ -221,7 +244,7 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 2. **复跑受本批影响的专项测试。** 至少包括 `capture-recovery.ps1`、`uia-timeout.ps1`、`cdp-action-receipt.ps1`、`uia-read-contract.ps1` 和 `window-state-contract.ps1`。
 3. **完成设置档案复验。** 仅在不存在用户设置窗口时运行，不关闭或复用用户实例；确认临时截图、UIA map 和收据在测试结束后删除。
 4. **做发布前隐私检查。** 扫描 staged diff 中的用户名、绝对路径、窗口标题、账号/设备名、截图和 UIA 正文，确认真实证据没有误入库。
-5. **清理测试遗留。** 当前 `%TEMP%` 曾发现 6 个历史 CDP 测试目录，且没有对应活跃进程；新测试已经加强清理，但历史目录应在验证目标路径后另行清除。
+5. **治理测试遗留。** `cleanup --dry-run --json --summary` 已能给出脱敏计数；没有有效项目 manifest 的同前缀候选不能视为可删除对象。当前没有 `--apply`，实际删除能力须完成二次扫描/TOCTOU 设计并由用户另行明确授权。
 6. **形成可审计提交。** 将代码、测试、文档按逻辑拆分或写清提交说明，再在用户明确要求时推送；推送后等待远程 CI 完成，不能只看本地退出码。
 
 ### P1：提高真实可用性和 OSS 可信度
@@ -229,20 +252,17 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 1. **把可重放应用档案扩到至少 11 个。** 优先补 Blender 的原生脚本/CLI 路径、第二个 Chromium/CEF 样本，以及一个非 Office 的原生 Windows 应用。
 2. **补脱敏的真实案例素材。** 为 UIA、CDP、COM 各准备一段真实 Windows 案例截图或短 GIF；不得用测试 fixture 冒充生产应用，也不得泄露账号、设备名或编辑器正文。
 3. **谨慎探索 QQ、微信、剪映。** QQ 只能在用户指定可逆目标后测试写入；微信没有可靠语义层时继续保持只读；剪映的 CDP/更新弹窗测试需要用户授权重启或显示窗口。
-4. **改善通用 UIA 浏览。** 精确 ID 已解决敏感定向读取，但旧模糊模式仍受 300 元素上限影响；可增加限定子树、分页或按 ControlType/AutomationId 的服务端条件组合。
-5. **增加能力缓存但保持保守。** 可按应用版本、进程路径和窗口类记录“某 provider 会挂死/某应用有 COM/CDP”的短期提示；缓存只能用于排序和提示，不能绕过实时 owner、权限和风险校验。
-6. **增加 `doctor`/诊断摘要。** 一次性报告 PowerShell、Node、C# 构建环境、Edge、Skill 路径、风险规则版本和可运行测试，降低新贡献者上手成本。
-7. **补齐开源治理文件。** 建议增加 `CONTRIBUTING.md`、`SECURITY.md`、行为准则、Issue/PR 模板、版本策略和中英文快速开始；这些会直接提高外部评审与贡献效率。
-8. **加强供应链检查。** 在 CI 中加入凭据/敏感信息扫描、依赖和许可证检查，并明确第三方工具版本；不要让扫描器自动上传本地证据。
+4. **补齐开源治理文件。** 建议增加 `CONTRIBUTING.md`、`SECURITY.md`、行为准则、Issue/PR 模板、版本策略和中英文快速开始；这些会直接提高外部评审与贡献效率。
+5. **加强供应链检查。** 在 CI 中加入凭据/敏感信息扫描、依赖和许可证检查，并明确第三方工具版本；不要让扫描器自动上传本地证据。
 
 ### P2：面向稳定版的工程化
 
 1. 为应用档案设计机器可读 schema，自动生成能力矩阵，减少手工文档与实际测试漂移。
 2. 建立 tag、Changelog、Release Notes 和安装升级/回滚说明；定义 Beta 到 v1.0 的兼容承诺。
-3. Node.js 22/24 CDP 矩阵已在本地 CI 配置完成，待远程验证；剩余工作是用真实机定期回归 Windows 10/11 差异，而不是假装单一云 runner 能覆盖全部桌面行为。
+3. Node.js 22/24 CDP 矩阵已在上一公开基线的远程 CI 通过；每个新候选仍需重跑。剩余工作是用真实机定期回归 Windows 10/11 差异，而不是假装单一云 runner 能覆盖全部桌面行为。
 4. 评估 helper 构建完整性、可选签名和发布校验和；生成的 DLL 仍不必提交，但发布过程必须可复现。
 5. 将 23 条踩坑中能编码解决的内容继续转化为探测、拒绝或测试，只保留真正依赖应用版本的易腐经验。
-6. 增加性能基线：大窗口树枚举时间、截图超时率、CDP 动作时延、临时文件回收率，并保证性能优化不削弱安全闸。
+6. 扩展性能第二阶段：在专用空闲桌面测 PrintWindow 成功/超时/sibling recovery，并为 CDP `insert/press` 设计另行授权、隔离、可撤回的写基线；不得借性能优化削弱安全闸。
 
 ## 9. 永久边界：不应被列为“待实现”
 

@@ -42,6 +42,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed with exit $LASTEXITCODE" }
           if (-not (Test-Path -LiteralPath scripts/HuWin.dll -PathType Leaf)) { throw 'HuWin.dll was not generated.' }
 
+      - name: Verify read-only doctor contracts
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/doctor-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "doctor-contract.ps1 failed with exit $LASTEXITCODE" }
+
       - name: Verify published artifact contract
         shell: pwsh
         run: |
@@ -59,6 +65,30 @@ jobs:
         run: |
           & pwsh -NoProfile -File tests/test-runner-contract.ps1
           if ($LASTEXITCODE -ne 0) { throw "test-runner-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify machine-readable output contracts
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/json-output-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "json-output-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify advisory capability cache boundaries
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/capability-cache-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "capability-cache-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify cleanup dry-run boundaries
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/cleanup-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "cleanup-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify read-only performance baseline contracts
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/benchmark-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "benchmark-contract.ps1 failed with exit $LASTEXITCODE" }
 
       - name: Verify exact UIA read contract without a desktop
         shell: pwsh

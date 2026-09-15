@@ -9,11 +9,11 @@
 //   powershell -File win.ps1 open "Xxx" --cdp 9333 [--relaunch]
 //
 // 用法：
-//   node cdp.js <port> list
+//   node cdp.js <port> list [--json] [--summary]
 //   node cdp.js <port> snapshot <target> [--all]        # 列出可交互元素并打 ref（默认只列视口内可见）
 //   node cdp.js <port> find  <target> '<文本>' [--role button] [--all]   # 按文本/aria-label/placeholder 模糊找元素
 //   node cdp.js <port> wait  <target> <条件> [超时秒=10]  # 条件: css选择器 | text:<文本> | gone:<选择器>
-//   node cdp.js <port> inspect <target> '<选择器>'       # 脱敏读取控件角色、状态、字符数与占位符
+//   node cdp.js <port> inspect <target> '<选择器>' [--json] [--summary] # 脱敏读取控件角色、状态、字符数与占位符
 //   node cdp.js <port> eval  <target> '<js表达式>'      # 只读求值；检测到可能副作用则拒绝（eval-read 同义）
 //   node cdp.js <port> eval-unsafe <target> '<js表达式>' --allow-side-effects [--receipt <路径>]
 //                                                        # 任意脚本写入；必须显式确认并留下回执
@@ -98,7 +98,7 @@ async function listTargets() {
 // auto：不能取「第一个 page」——Electron/内嵌浏览器常带隐藏页（picker / launcher / background），
 // 实测某 app 的第一个 page 是隐藏的技能选择页，snapshot 出来是空的。
 // 改成对每个候选页打分：可见视口面积 + 可交互元素数，取最高，并回显选中了谁，方便下次直接指定。
-async function pickTargetAuto(targets) {
+async function pickTargetAuto(targets, summary = false) {
   const allCands = targets.filter(t => t.type === 'page' && !/background|devtools/i.test(t.url));
   const cands = allCands.slice(0, AUTO_TARGET_LIMIT);
   if (allCands.length > cands.length) console.error(`auto: target 候选 ${allCands.length} 个，只评分前 ${AUTO_TARGET_LIMIT} 个`);
@@ -125,15 +125,18 @@ async function pickTargetAuto(targets) {
   if (scored.length > 1 && scored[0].score === scored[1].score) {
     throw new CdpRefusalError(`refused: auto target 最高分并列（score=${scored[0].score}），请运行 list 后使用明确 target id`);
   }
-  console.error(`auto → ${(best.title || '').slice(0, 30)} (${best.url.slice(0, 60)})  # 下次可直接指定这个 title/url 子串`);
+  console.error(summary
+    ? 'auto → 已选择一个 target；--summary 已省略 title/url，请用 list --json --summary 核对计数'
+    : `auto → ${(best.title || '').slice(0, 30)} (${best.url.slice(0, 60)})  # 下次可直接指定这个 title/url 子串`);
   return best;
 }
-function pickTarget(targets, sel) {
+function pickTarget(targets, sel, summary = false) {
   const exact = targets.filter(t => t.id === sel);
   if (exact.length === 1) return exact[0];
   const pageMatches = targets.filter(t => t.type === 'page' && (t.title.includes(sel) || t.url.includes(sel)));
   const matches = pageMatches.length ? pageMatches : targets.filter(t => t.title.includes(sel) || t.url.includes(sel));
   if (matches.length > 1) {
+    if (summary) throw new CdpRefusalError(`refused: target 选择器匹配 ${matches.length} 项；--summary 已省略选择器与候选详情，请使用明确 target id`);
     const candidates = matches.slice(0, 8).map(t => `${t.type} id=${t.id} title=${JSON.stringify(String(t.title || '').slice(0, 60))}`).join('\n  ');
     throw new CdpRefusalError(`refused: target 选择器匹配 ${matches.length} 项，不会自动选择\n  ${candidates}\n请使用明确 target id`);
   }
@@ -489,25 +492,31 @@ async function doEvalUnsafe(sess, expr) {
   return { ...observed, observedDomEffect: observed.effect, effect: 'unknown' };
 }
 
-async function doInspect(sess, sel) {
+async function doInspect(sess, sel, emit = true, summary = false) {
   if (!sel) throw new Error('inspect 需要选择器');
-  const out = await evaluate(
-    sess,
-    `(() => { const el=document.querySelector(${jsStr(resolveSel(sel))}); if(!el) return null;
-      const r=el.getBoundingClientRect(); const cs=getComputedStyle(el);
-      const tag=el.tagName.toLowerCase(); const role=el.getAttribute('role') || '';
-      let value;
-      if(tag==='input'||tag==='textarea') value=el.value;
-      else { const copy=el.cloneNode(true); copy.querySelectorAll('[data-slate-placeholder]').forEach(x=>x.remove()); value=copy.textContent; }
-      return { found:true, tag, role, editable:!!(el.isContentEditable||tag==='input'||tag==='textarea'||role==='textbox'||role==='searchbox'),
-        disabled:!!(el.disabled||el.getAttribute('aria-disabled')==='true'),
-        visible:r.width>0&&r.height>0&&cs.visibility!=='hidden'&&cs.display!=='none',
-        textLength:String(value||'').length,
-        placeholderVisible:!!el.querySelector('[data-slate-placeholder]'),
-        placeholderPresent:!!(el.getAttribute('placeholder')||el.getAttribute('data-placeholder')) }; })()`
-  );
-  if (!out) throw new Error('元素未找到: ' + sel);
-  console.log(JSON.stringify(out));
+  let out;
+  try {
+    out = await evaluate(
+      sess,
+      `(() => { const el=document.querySelector(${jsStr(resolveSel(sel))}); if(!el) return null;
+        const r=el.getBoundingClientRect(); const cs=getComputedStyle(el);
+        const tag=el.tagName.toLowerCase(); const role=el.getAttribute('role') || '';
+        let value;
+        if(tag==='input'||tag==='textarea') value=el.value;
+        else { const copy=el.cloneNode(true); copy.querySelectorAll('[data-slate-placeholder]').forEach(x=>x.remove()); value=copy.textContent; }
+        return { found:true, tag, role, editable:!!(el.isContentEditable||tag==='input'||tag==='textarea'||role==='textbox'||role==='searchbox'),
+          disabled:!!(el.disabled||el.getAttribute('aria-disabled')==='true'),
+          visible:r.width>0&&r.height>0&&cs.visibility!=='hidden'&&cs.display!=='none',
+          textLength:String(value||'').length,
+          placeholderVisible:!!el.querySelector('[data-slate-placeholder]'),
+          placeholderPresent:!!(el.getAttribute('placeholder')||el.getAttribute('data-placeholder')) }; })()`
+    );
+  } catch (e) {
+    if (summary && !(e instanceof CdpTimeoutError)) throw new Error('inspect 无法评估选择器；--summary 已省略选择器与页面异常详情');
+    throw e;
+  }
+  if (!out) throw new Error(summary ? '元素未找到；--summary 已省略选择器' : '元素未找到: ' + sel);
+  if (emit) console.log(JSON.stringify(out));
   return out;
 }
 
@@ -829,12 +838,85 @@ function directActionReceipt(kind, args) {
   return { kind };
 }
 
-function safeTarget(target) {
+function safeTarget(target, summary = false) {
   let url = target?.url || '';
   try { const u = new URL(url); u.search = ''; u.hash = ''; url = u.toString(); } catch {}
   return target ? {
-    id: target.id, type: target.type, title: String(target.title || '').slice(0, 120), url,
+    id: target.id, type: target.type,
+    title: summary ? null : String(target.title || '').slice(0, 120),
+    url: summary ? null : url,
   } : null;
+}
+
+function parseOutputFlags(argv, command) {
+  const args = [...argv];
+  const jsonCount = args.filter(x => x === '--json').length;
+  const summaryCount = args.filter(x => x === '--summary').length;
+  const requested = jsonCount > 0 || summaryCount > 0;
+  if (jsonCount > 1 || summaryCount > 1) {
+    throw new CdpRefusalError('refused: --json/--summary 每项最多出现一次');
+  }
+  if (requested && !['list', 'inspect'].includes(command)) {
+    throw new CdpRefusalError('refused: 当前只有 CDP list/inspect 支持 --json/--summary');
+  }
+  return {
+    args: args.filter(x => x !== '--json' && x !== '--summary'),
+    json: jsonCount === 1,
+    summary: summaryCount === 1,
+  };
+}
+
+function typeCounts(items) {
+  const counts = new Map();
+  for (const item of items) counts.set(String(item.type || 'unknown'), (counts.get(String(item.type || 'unknown')) || 0) + 1);
+  return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([type, count]) => ({ type, count }));
+}
+
+function cdpTargetsReport(targets, summary) {
+  return {
+    schema: 'win-use-master/cdp-targets-result-v1',
+    observedAt: new Date().toISOString(),
+    status: 'ok',
+    privacy: {
+      mode: summary ? 'summary' : 'full',
+      collection: 'unchanged',
+      redactedFields: summary ? ['targets'] : ['targets[].url.query', 'targets[].url.fragment', 'targets[].webSocketDebuggerUrl'],
+    },
+    cdpPort: Number(PORT),
+    counts: { total: targets.length, pages: targets.filter(t => t.type === 'page').length },
+    typeCounts: typeCounts(targets),
+    targets: summary ? [] : targets.map(t => safeTarget(t, false)),
+  };
+}
+
+function cdpInspectReport(target, result, summary) {
+  return {
+    schema: 'win-use-master/cdp-inspect-result-v1',
+    observedAt: new Date().toISOString(),
+    status: result?.found ? 'found' : 'not-found',
+    privacy: {
+      mode: summary ? 'summary' : 'full',
+      collection: 'safe-metadata-only',
+      targetSelectorIncluded: false,
+      elementSelectorIncluded: false,
+      redactedFields: summary
+        ? ['target.title', 'target.url']
+        : ['target.url.query', 'target.url.fragment', 'target.webSocketDebuggerUrl'],
+    },
+    cdpPort: Number(PORT),
+    target: safeTarget(target, summary),
+    element: result,
+  };
+}
+
+function formatTargetsSummary(report) {
+  const types = report.typeCounts.map(item => `${item.type}:${item.count}`).join(',') || 'none';
+  return `cdp list summary: status=${report.status} total=${report.counts.total} pages=${report.counts.pages} types=${types}; title/url=<redacted>`;
+}
+
+function formatInspectSummary(report) {
+  const e = report.element;
+  return `cdp inspect summary: status=${report.status} target=${report.target?.id || 'unknown'} tag=${e?.tag || 'unknown'} role=${e?.role || 'unknown'} editable=${!!e?.editable} disabled=${!!e?.disabled} visible=${!!e?.visible} textLength=${e?.textLength ?? 'unknown'}; selectors/title/url=<redacted>`;
 }
 
 function parseReceiptFlag(argv) {
@@ -986,7 +1068,14 @@ async function doAct(sess, scriptArg, target) {
 async function main() {
   if (!portArg) { usage(); return; }
   const parsed = parseReceiptFlag(rest);
-  let args = parsed.args;
+  const output = parseOutputFlags(parsed.args, cmd);
+  let args = output.args;
+  if ((cmd === 'list' || !cmd) && args.length !== 0) {
+    throw new CdpRefusalError('refused: list 只支持 --json/--summary；未知或多余参数已拒绝');
+  }
+  if (cmd === 'inspect' && args.length !== 2) {
+    throw new CdpRefusalError('refused: inspect 需要且只接受 <target> <selector> [--json] [--summary]；未知或多余参数已拒绝');
+  }
   if (cmd === 'eval-unsafe') {
     const confirmations = args.filter(x => x === '--allow-side-effects').length;
     if (confirmations !== 1) {
@@ -1001,7 +1090,9 @@ async function main() {
   const targets = await listTargets();
 
   if (cmd === 'list' || !cmd) {
-    for (const t of targets) console.log(`${t.type}\t${t.id}\t${(t.title || '').slice(0, 40)}\t${t.url.slice(0, 80)}`);
+    if (output.json) console.log(JSON.stringify(cdpTargetsReport(targets, output.summary), null, 2));
+    else if (output.summary) console.log(formatTargetsSummary(cdpTargetsReport(targets, true)));
+    else for (const t of targets) console.log(`${t.type}\t${t.id}\t${(t.title || '').slice(0, 40)}\t${t.url.slice(0, 80)}`);
     return;
   }
 
@@ -1012,8 +1103,11 @@ async function main() {
   const selectableTargets = mutating
     ? targets.filter(target => cdpSession.targetIds.includes(target.id))
     : targets;
-  const t = automaticTarget ? await pickTargetAuto(selectableTargets) : pickTarget(targets, args[0]);
-  if (!t) throw new Error(`找不到 target: ${args[0]}\n可用的:\n` + targets.map(x => `  ${x.type} ${x.title} ${x.url}`).join('\n'));
+  const t = automaticTarget ? await pickTargetAuto(selectableTargets, output.summary) : pickTarget(targets, args[0], output.summary);
+  if (!t) {
+    if (output.summary) throw new Error('找不到 target；--summary 已省略选择器与候选详情');
+    throw new Error(`找不到 target: ${args[0]}\n可用的:\n` + targets.map(x => `  ${x.type} ${x.title} ${x.url}`).join('\n'));
+  }
   if (mutating) {
     assertAuthorizedTarget(cdpSession, t);
     cdpSession = validateCdpSession(PORT, cdpSession.sessionId);
@@ -1027,7 +1121,11 @@ async function main() {
   try {
     if (cmd === 'eval' || cmd === 'eval-read') await doEvalReadOnly(sess, args[1]);
     else if (cmd === 'eval-unsafe') trace = await doEvalUnsafe(sess, args[1]);
-    else if (cmd === 'inspect') await doInspect(sess, args[1]);
+    else if (cmd === 'inspect') {
+      const inspected = await doInspect(sess, args[1], !output.json && !output.summary, output.summary);
+      if (output.json) console.log(JSON.stringify(cdpInspectReport(t, inspected, output.summary), null, 2));
+      else if (output.summary) console.log(formatInspectSummary(cdpInspectReport(t, inspected, true)));
+    }
     else if (cmd === 'click') trace = await doClick(sess, args[1]);
     else if (cmd === 'text') trace = await doText(sess, args[1], args[2]);
     else if (cmd === 'mouse') trace = await doMouse(sess, args[1]);

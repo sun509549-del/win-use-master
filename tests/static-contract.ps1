@@ -8,7 +8,7 @@ function Assert-Contract([bool] $Condition, [string] $Message) {
 }
 
 $requiredFiles = @(
-    'README.md', 'SKILL.md', 'HANDOFF.md', 'PROJECT_STATUS.md', 'IMPLEMENTATION_PLAN.md', 'LICENSE', 'cdp.js',
+    '.gitattributes', 'README.md', 'SKILL.md', 'HANDOFF.md', 'PROJECT_STATUS.md', 'IMPLEMENTATION_PLAN.md', 'LICENSE', 'cdp.js',
     'config/risk-actions.json', 'assets/architecture.svg', 'references/机器可读输出.md', 'references/能力缓存.md', 'references/临时数据治理.md', 'references/性能基线.md',
     'scripts/win.ps1', 'scripts/doctor.ps1', 'scripts/doctor-core.ps1', 'scripts/capability-cache.ps1', 'scripts/capability-cache-core.ps1',
     'scripts/cleanup.ps1', 'scripts/cleanup-core.ps1', 'scripts/benchmark.ps1', 'scripts/benchmark-core.ps1', 'scripts/benchmark-uia-fixture.ps1',
@@ -102,5 +102,7 @@ foreach ($match in $relativeLinks) {
 $ignore = Get-Content -LiteralPath (Join-Path $root '.gitignore') -Raw -Encoding utf8
 Assert-Contract ($ignore -match '(?m)^scripts/HuWin\.dll\r?$') '.gitignore 未排除生成的 HuWin.dll'
 Assert-Contract ($ignore -match '(?m)^\.last-update-check\r?$') '.gitignore 未排除本地版本检查状态'
+$attributes = Get-Content -LiteralPath (Join-Path $root '.gitattributes') -Raw -Encoding utf8
+Assert-Contract ($attributes -match '(?m)^\* text=auto eol=lf\r?$') '仓库必须固定文本为 LF，避免 Windows checkout 改变 Skill 体积和契约结果'
 
 Write-Output "PASS: static publish contract files/risk-policy/svg/README-links/SKILL-size=$($skill.Length)"

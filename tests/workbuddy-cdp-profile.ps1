@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $win = Join-Path $root 'scripts\win.ps1'
 $cdp = Join-Path $root 'scripts\cdp.js'
-$node = (Get-Command node -ErrorAction Stop).Source
+$node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("win-use-master-workbuddy-$([Guid]::NewGuid().ToString('N'))")
 [IO.Directory]::CreateDirectory($tempRoot) | Out-Null
 $probeText = 'win-use-master cdp probe'

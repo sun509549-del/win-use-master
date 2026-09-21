@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $cdp = Join-Path $root 'scripts\cdp.js'
 $win = Join-Path $root 'scripts\win.ps1'
-$node = (Get-Command node -ErrorAction Stop).Source
+$node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $edgeCandidates = @(
     'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
     'C:\Program Files\Microsoft\Edge\Application\msedge.exe'

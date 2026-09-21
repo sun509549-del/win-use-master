@@ -1,17 +1,22 @@
 # win-use-master 未来实施方案
 
-> 计划版本：2026-09-15
+> 计划版本：2026-09-21
 > 计划范围：从当前 Beta 候选工作区推进到可审计的 Beta 发布，再推进到 v1.0
 > 当前状态基线：[`PROJECT_STATUS.md`](PROJECT_STATUS.md)
 > 执行原则：里程碑必须通过验收门才能前进；日期是目标，不是绕过安全或测试的理由。
 
-## 当前执行进度（2026-09-15）
+## 当前执行进度（2026-09-21）
 
-- M0-02 无桌面回归已完成：统一入口当前实跑 Contract 层 14/14 通过。
+- M0-02 无桌面回归已完成：统一入口当前实跑 Contract 层 21/21 通过。
 - M1-01 已完成首版：`tests/run-tests.ps1` 支持 Contract/Desktop/Coordinate/Profiles、`-List`、`-DryRun`、`-TestId`、显式 profile、单项截止时间和 0/1/2 聚合。
 - M1-02 已完成首版：`win-use-master/test-report-v1` 只保存环境版本、结果、耗时、输出行数和 SHA-256，不嵌入原始测试日志；契约覆盖 dry-run 与真实 parse 执行。
 - M1-03 实现完成：CI 已复用统一 parse，增加调度器契约和 UIA timeout，拆分核心/CDP job，并建立 Node 22/24 矩阵；action 固定到完整 SHA且关闭无用缓存。Node 22 结论必须以每个目标提交的远程 Actions 结果为准。
 - M2-01～M2-06 已完成首版。M2-06 已覆盖 windows 首次/重复新进程、100/300/1000 合成 UIA 与临时无头 Edge 的只读 CDP inspect；PrintWindow 和 CDP 写性能留待专用桌面/单独授权。M2-05 删除 apply 尚未开放。
+- M3-01 已完成首版：`app-profile-catalog-v1` 编码 6 个可重放、3 个只读观察和 1 个未安装占位；能力矩阵由单向脚本确定性生成，并由 Contract/CI 校验分类、测试映射、隐私与 30 天/版本/身份失效策略。
+- M3-03 已完成首版：目录绑定的 `profile-test-plan-v1` 把新增档案固化为十阶段检查表；默认退出 2，计划模式零应用、零写命令、零证据、零仓库修改，真实应用逻辑仍由独立 profile 实现。
+- M3-04 已完成文字派生首版：UIA/记事本、CDP/WorkBuddy、COM/Excel 三类案例由 `public-cases-v1` 确定性生成并受隐私契约守护；经人工复核的真实截图/GIF 仍为 0，不能把本阶段标成完整完成。
+- M4-01～M4-05 已完成首版：威胁模型、跨运行时风险规则、供应链检查、贡献/安全/行为规范、脱敏 Issue Forms、PR 模板、五分钟只读体验、英文 Quick Start 和安装生命周期指南均已落库并受契约守护。
+- M5-01 与 M5-04 已完成未发布首版：`release-manifest-v1`、`VERSION`、Changelog、Release Notes 草案、版本/回滚说明和零副作用发布检查已经落库；当前 `0.1.0-beta.1` 仍被缺失的桌面、档案、干净 clone、远程 CI、tag 与校验和证据安全阻塞。
 - M0-03～M0-05 尚待专用空闲桌面，因此不能把当前状态标成完整 Beta 发布通过。
 
 ## 1. 目标和成功定义
@@ -304,6 +309,8 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 
 由脚本从元数据生成 README/档案能力矩阵，避免手工统计与测试文件漂移。生成脚本必须是单向、确定性的，不覆盖人工经验正文。
 
+首版验收结果：`config/app-profiles.json` 已包含 10 条目录记录，明确区分 9 个实测样本与 Blender 未安装占位；`scripts/generate-app-matrix.ps1` 只生成 `references/应用能力矩阵.generated.md`，不会覆盖人工 `app档案.md`。`tests/app-profile-catalog-contract.ps1` 校验必需字段、能力枚举、6/3/1 分类、真实测试文件/调度器映射、脱敏派生证据、复验条件和生成漂移。M3-01 已完成首版，M3 的样本扩展与公开脱敏案例仍未完成。
+
 ### M3-02：新增样本优先级
 
 | 顺序 | 样本类型 | 目标 | 选择理由 | 安全要求 |
@@ -332,6 +339,8 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 9. 删除含正文的临时证据；
 10. 把共性问题优先变成代码或测试，易腐细节才写入 app 档案。
 
+首版验收结果：`tests/profile-test-template.ps1` 只接受目录中的唯一 appId，未显式 `-Plan` 时退出 2；JSON 计划使用 `win-use-master/profile-test-plan-v1`，声明精确目标、最低可靠层、独立读回、回滚/隔离、finally 清理和拒绝/unknown 退出码。`tests/profile-template-contract.ps1` 端到端验证默认拒绝、未知 app、冲突参数、十阶段顺序、摘要隐私、无桌面执行 primitive 和仓库逐文件零修改。具体实现要求见 `references/应用档案测试模板.md`。M3-03 已完成首版，但新增真实应用仍必须逐个实测。
+
 ### M3-04：脱敏案例素材
 
 至少制作三类案例：
@@ -341,6 +350,8 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 - COM：临时 Excel/WPS 文件的写入、保存和脱离宿主验证。
 
 每个案例展示“探测 → 选择控制面 → 动作 → 独立验证 → 清理”，并对标题、用户名、设备名、路径、正文和通知区域做脱敏。原始证据不入库，只提交审查后的派生素材。
+
+文字派生首版结果：`config/public-cases.json` 编码记事本 UIA、WorkBuddy CDP 和 Excel COM 三个已验证案例，`scripts/generate-public-cases.ps1` 单向生成 `references/脱敏真实案例.generated.md`。契约从真实 profile 测试交叉核对输入长度、步骤、公式和合计，禁止正文、绝对路径、动态标识、URL/邮箱和 fixture 视觉替代。当前 `visual.status` 均为 `not-included-pending-reviewed-source`，因此 M3-04 只完成文字素材和发布边界，截图/GIF 仍待真实桌面与人工脱敏复核。
 
 ### M3 验收门
 
@@ -356,6 +367,8 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 
 ### M4-01：威胁模型
 
+状态：**已实现首版。** `THREAT_MODEL.md` 以稳定 ID 覆盖 UI 提示注入、CDP 身份、桌面/UIPI、坐标漂移、写后 unknown、证据泄露、清理越界、供应链和恶意贡献；每项均列出控制、测试、残余风险与停手线，并由 `governance-contract.ps1` 防止映射漂移。
+
 新增 `THREAT_MODEL.md`，至少覆盖：
 
 - 恶意窗口标题、DOM/UIA 文本对代理的提示注入；
@@ -370,6 +383,8 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 
 ### M4-02：风险规则强化
 
+状态：**已实现首版。** JSON 明确声明 NFKC、camelCase、分隔符、空白折叠和 trim 顺序；UIA/L2 与 CDP 分别使用共享 PowerShell/Node 解释器。契约以 12 个中英文/全角/camelCase/下划线正例、15 个词边界负例覆盖全部 8 条规则，并确认缺规范化、重复 ID 和非法 flags 在两个运行时失败关闭。现有 CDP 真实动作拒绝与 UIA worker 超时链已复跑。
+
 - 扩展中英文最终动作正反例、Unicode NFKC、camelCase、下划线和近义词测试；
 - UIA、CDP、L2 对同一规则版本保持一致；
 - 风险规则变更必须同时给出误报和漏报样例；
@@ -377,12 +392,16 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 
 ### M4-03：敏感信息和供应链检查
 
+状态：**已实现无外部依赖的首版。** `SUPPLY_CHAIN.md` 记录 Windows/PowerShell/Node/Edge 运行时、零包管理依赖、MIT 许可证和两项固定 SHA 的 GitHub Action；`repository-hygiene-contract.ps1` 扫描高置信凭据、未审查媒体/生成二进制、包 manifest、workflow Action 与包安装命令。它不上传文件或匹配内容，也不替代历史提交、runner 镜像和 Action 上游的人工审查。
+
 - CI 增加仓库级 secret/credential 扫描，规则排除合成测试值但不排除整个证据目录；
 - 检查 PowerShell/Node 依赖和许可证；当前无包管理依赖也应记录事实；
 - GitHub Actions 固定到可信版本或 commit，并定期审查更新；
 - CI 不上传真实截图、UIA map、DOM 快照和用户目录日志。
 
 ### M4-04：开源治理文件
+
+状态：**已实现首版。** `CONTRIBUTING.md`、`SECURITY.md`、`CODE_OF_CONDUCT.md`、Bug/app-profile/security-contact Issue Forms 和 PR 模板已完成。由于仓库当前没有公开的安全邮箱且私密漏洞报告尚未启用，备用公开表单没有自由文本字段，只用于建立私密渠道，不能承载漏洞细节。
 
 建议新增：
 
@@ -394,6 +413,8 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 - `.github/pull_request_template.md`：风险、测试、隐私、兼容性清单。
 
 ### M4-05：对外文档
+
+状态：**已实现首版。** README 已增加只运行 doctor/probe/windows 的五分钟只读体验、英文 Requirements/Quick Start/Beta 边界和退出码 2 说明；`references/安装升级与卸载.md` 区分 OpenAI Skill 目录规范与第三方 skills CLI，覆盖 CLI/Git 升级、精确卸载、缓存/CDP session/helper/版本检查/evidence 清单和非递归清理。当前没有独立 UI 分发需求，因此按 skill-creator 约束不创建会复制入口内容的 `agents/openai.yaml`。
 
 - README 保持中文主入口，同时增加精简英文 Quick Start 或英文 README；
 - 增加“5 分钟只读体验”，默认只运行 `probe/windows/doctor`；
@@ -414,6 +435,8 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 - Major：默认行为、命令语义、收据 schema 或安全授权模型的不兼容变化。
 
 现有 `receipt-v1`、`uia-map-v1`、`action-receipt-v1` 在 v1.0 后视为公开契约；新增字段应保持读取兼容，删除/改义需要 major 版本。
+
+首版验收结果：`config/release.json` 是版本、通道、发布状态和发布门的真相源，`VERSION` 为单行投影；当前版本为 `0.1.0-beta.1`、状态 `unreleased`。`release-contract.ps1` 守住 SemVer、文档同步、既有 `*-vN` 含义和退出码兼容规则。
 
 ### M5-02：Release Candidate
 
@@ -449,6 +472,8 @@ GitHub 托管 runner 不提供可信用户交互桌面，因此：
 - 发布后 72 小时只处理 P0/P1 回归问题，不立即合并新的大功能。
 
 如果任何强制验收项失败，输出阻塞清单并继续标记 Beta；不因日期、宣传或申请需要跳过门槛。
+
+首版验收结果：`scripts/release-check.ps1` 只读汇总 manifest、文档与 Git 工作区，不创建或修改 commit、tag、Release 和文件；有任何必需门未通过时退出 2。当前没有 tag、published commit 或 previous stable，故发布和真实回滚验证仍未完成。
 
 ## 11. 质量门与 Definition of Done
 
@@ -615,6 +640,6 @@ Backlog → Ready → In Progress → Needs Desktop → Needs User Authorization
 
 ## 17. 最终执行建议
 
-最合理的下一步是先完成 M0，而不是直接开发 `doctor` 或扩应用。当前项目已经有足够多的新能力，真正的风险在于完整桌面回归和远程发布证据尚未闭合。M0 通过后，优先实施 M1 的测试调度和报告，再进入 M2；这样后续每个新能力和应用档案都会自动获得更好的验证基础。
+最合理的下一步是完成 M0 尚未闭合的 Desktop/Coordinate 发布门，并推进 M3 的真实应用档案。M1、M2、M4 首版与 M5 的版本/回滚契约已经形成，后续应把新增能力与真实应用档案都接入现有分层测试、威胁模型、隐私门和 `release-manifest-v1`，再在干净 clone 与目标 SHA 上验证候选。
 
 执行过程中始终保留三条底线：无法确定目标就退出 2，无法确定写入效果就停止，无法证明证据已脱敏就不公开。

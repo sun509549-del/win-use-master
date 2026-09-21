@@ -1,0 +1,135 @@
+{
+  "schema": "win-use-master/public-cases-v1",
+  "generatedDocument": "references/脱敏真实案例.generated.md",
+  "policy": {
+    "derivedOnly": true,
+    "rawEvidenceCommitted": false,
+    "fixtureSubstitutionAllowed": false,
+    "visualAssetRequirement": "reviewed-and-redacted-source-only"
+  },
+  "cases": [
+    {
+      "order": 1,
+      "caseId": "notepad-uia-reversible-write",
+      "category": "uia",
+      "title": "记事本：UIA Document 可逆写",
+      "appId": "windows-notepad",
+      "verifiedDate": "2026-09-08",
+      "sourceTest": "tests/notepad-profile.ps1",
+      "controlLayer": "L1",
+      "flow": {
+        "discovery": "拒绝复用运行中的记事本，并确认新实例只有一个空白、未修改的 Document 标签。",
+        "selection": "文本区提供 Document ValuePattern 和稳定语义读回，因此选择 L1，不降级到坐标输入。",
+        "action": "向隔离空白文档写入 30 字符合成测试值；公开素材只记录长度，不包含正文。",
+        "verification": "Document 读回长度、状态栏字符数和标签已修改状态三者一致；清空后分别回到 0 和未修改。",
+        "cleanup": "正常与异常路径都先清空测试内容，再关闭精确测试窗口并删除边界校验后的临时证据目录。"
+      },
+      "metrics": {
+        "inputLength": 30,
+        "restoredLength": 0,
+        "focusSeconds": 0
+      },
+      "independentSignals": ["Document semantic readback", "character-count status", "modified/unmodified tab state"],
+      "stopLines": ["save", "save-as", "overwrite", "close-user-content"],
+      "sideEffects": {
+        "externalFinalAction": false,
+        "persistentUserData": false,
+        "temporaryArtifactCreated": true
+      },
+      "visual": {
+        "status": "not-included-pending-reviewed-source",
+        "fixtureUsed": false,
+        "reason": "没有已确认完成人工脱敏复核的真实应用截图或 GIF。"
+      },
+      "privacy": {
+        "rawEvidenceCommitted": false,
+        "rawInputIncluded": false,
+        "absolutePathsIncluded": false,
+        "dynamicIdentifiersIncluded": false
+      }
+    },
+    {
+      "order": 2,
+      "caseId": "workbuddy-cdp-reversible-draft",
+      "category": "cdp",
+      "title": "WorkBuddy AI：CDP 草稿插入与撤回",
+      "appId": "workbuddy-ai",
+      "verifiedDate": "2026-09-08",
+      "sourceTest": "tests/workbuddy-cdp-profile.ps1",
+      "controlLayer": "L0",
+      "flow": {
+        "discovery": "要求用户已授权的调试实例，重新核对端口 owner、会话、唯一 page target、空输入区和禁用的发送按钮。",
+        "selection": "主窗口 UIA 无可操作树，而受约束 CDP 能绑定精确 target，因此选择 L0；测试不启动、不重启也不关闭应用。",
+        "action": "向空 Slate 输入区插入 24 字符合成测试值，随后用 SelectAll 和 Backspace 撤回；从不按 Enter 或点击发送。",
+        "verification": "发送按钮经历 disabled→enabled→disabled，输入区恢复占位符且长度归零；动作收据只保留文本长度。",
+        "cleanup": "测试不产生会话；finally 只删除本次临时 recipe 和脱敏收据，不改变用户授权实例的生命周期。"
+      },
+      "metrics": {
+        "inputLength": 24,
+        "restoredLength": 0,
+        "completedSteps": 6,
+        "focusSeconds": 0
+      },
+      "independentSignals": ["send-button disabled state", "editor placeholder state", "editor text length", "redacted action receipt"],
+      "stopLines": ["send", "share", "delete-conversation", "restart-for-update", "upload", "existing-draft"],
+      "sideEffects": {
+        "externalFinalAction": false,
+        "persistentUserData": false,
+        "temporaryArtifactCreated": true
+      },
+      "visual": {
+        "status": "not-included-pending-reviewed-source",
+        "fixtureUsed": false,
+        "reason": "现有真实快照可能含会话标题和账号信息，尚未形成经人工复核的发布图。"
+      },
+      "privacy": {
+        "rawEvidenceCommitted": false,
+        "rawInputIncluded": false,
+        "absolutePathsIncluded": false,
+        "dynamicIdentifiersIncluded": false
+      }
+    },
+    {
+      "order": 3,
+      "caseId": "excel-com-isolated-workbook",
+      "category": "com",
+      "title": "Microsoft Excel：私有 COM 实例与脱离宿主验证",
+      "appId": "microsoft-excel",
+      "verifiedDate": "2026-09-08",
+      "sourceTest": "tests/excel-com-profile.ps1",
+      "controlLayer": "L0",
+      "flow": {
+        "discovery": "记录已有 Excel 进程后创建私有自动化实例，并核对新进程、Microsoft Excel 可执行身份与 XLMAIN 窗口。",
+        "selection": "Excel.Application 提供结构化对象模型和私有进程隔离，因此选择 L0 COM，不使用 UIA 或坐标写表。",
+        "action": "在临时工作簿写入 3 行合成采购数据、金额公式和合计公式，只保存到唯一临时目录。",
+        "verification": "COM 读回 D5=3640，UIA 编辑栏观察到合计公式；退出 Excel 后直接读取 xlsx XML，再次确认公式与缓存值。",
+        "cleanup": "关闭临时工作簿、释放全部 COM 引用、只退出私有实例，并在边界检查后删除整个临时目录。"
+      },
+      "metrics": {
+        "dataRows": 3,
+        "formulaCell": "D5",
+        "formula": "SUM(D2:D4)",
+        "verifiedTotal": 3640,
+        "focusSeconds": 0
+      },
+      "independentSignals": ["COM value readback", "UIA formula-bar observation", "xlsx worksheet XML formula", "xlsx cached value", "private process exit"],
+      "stopLines": ["save-user-workbook", "share", "send", "macro", "quit-user-instance"],
+      "sideEffects": {
+        "externalFinalAction": false,
+        "persistentUserData": false,
+        "temporaryArtifactCreated": true
+      },
+      "visual": {
+        "status": "not-included-pending-reviewed-source",
+        "fixtureUsed": false,
+        "reason": "真实 Excel 截图可能包含账户 UI，当前只发布不含账户信息的派生事实。"
+      },
+      "privacy": {
+        "rawEvidenceCommitted": false,
+        "rawInputIncluded": false,
+        "absolutePathsIncluded": false,
+        "dynamicIdentifiersIncluded": false
+      }
+    }
+  ]
+}

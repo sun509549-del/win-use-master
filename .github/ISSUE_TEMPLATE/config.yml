@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security policy
+    url: https://github.com/sun509549-del/win-use-master/security/policy
+    about: 安全漏洞和敏感证据请先阅读安全政策，不要公开细节。

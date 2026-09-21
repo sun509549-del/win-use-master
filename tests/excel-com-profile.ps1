@@ -24,6 +24,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $win = Join-Path $root 'scripts\win.ps1'
 $evidence = Join-Path ([IO.Path]::GetTempPath()) ("win-use-master-excel-$([Guid]::NewGuid().ToString('N'))")
 [IO.Directory]::CreateDirectory($evidence) | Out-Null
+try {
 Add-Type -AssemblyName System.Drawing.Common -ErrorAction SilentlyContinue
 Add-Type -Path (Join-Path $root 'scripts\HuWin.dll')
 
@@ -141,9 +142,13 @@ if (-not $m.Success -or $m.Groups[1].Value -ne 'SUM(D2:D4)' -or [double]$m.Group
 if ($wbXml -notmatch 'sheet name="win-use-master"') { throw 'xlsx 里没有重命名后的工作表。' }
 Write-Output "file: D5 formula=SUM(D2:D4) cached=3640 sheet=win-use-master (verified without Excel PASS)"
 Write-Output "PASS: Excel 16.x COM profile private-instance write→readback→visible→UIA/L3→save→file-verified quit-exited=$(-not $lingering) focus=0s"
-
-$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-$full = [IO.Path]::GetFullPath($evidence)
-if ($full.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($full).StartsWith('win-use-master-excel-')) {
-    Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
+} finally {
+    # Outer privacy boundary: verification failures must not leave screenshots or workbooks behind.
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $full = [IO.Path]::GetFullPath($evidence)
+    if ([IO.Directory]::Exists($full) -and
+        $full.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFileName($full).StartsWith('win-use-master-excel-', [StringComparison]::Ordinal)) {
+        Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }

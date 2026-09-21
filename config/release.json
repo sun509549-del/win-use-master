@@ -1,0 +1,75 @@
+{
+  "schema": "win-use-master/release-manifest-v1",
+  "projectName": "win-use-master",
+  "version": "0.1.0-beta.1",
+  "channel": "beta",
+  "status": "unreleased",
+  "releaseDate": null,
+  "releaseTag": null,
+  "publishedCommit": null,
+  "previousStable": {
+    "version": null,
+    "tag": null
+  },
+  "compatibility": {
+    "phase": "pre-1.0",
+    "commandPolicy": "document-breaking-changes-and-bump-minor-before-1.0",
+    "schemaPolicy": "never-change-an-existing-vN-meaning",
+    "exitCodePolicy": "0-success-1-failure-2-refused-or-unknown"
+  },
+  "runtimes": {
+    "powershellMinimumMajor": 7,
+    "nodeOptionalMinimumMajor": 22,
+    "windows": ["10", "11"]
+  },
+  "readiness": [
+    {
+      "id": "contract-local",
+      "required": true,
+      "status": "passed-local",
+      "evidence": "21/21 Contract tests passed locally on 2026-09-21; remote candidate SHA and desktop gates remain pending"
+    },
+    {
+      "id": "desktop-twice",
+      "required": true,
+      "status": "pending",
+      "evidence": null
+    },
+    {
+      "id": "coordinate-twice",
+      "required": true,
+      "status": "pending",
+      "evidence": null
+    },
+    {
+      "id": "profile-matrix",
+      "required": true,
+      "status": "blocked",
+      "evidence": "6 replayable and 9 observed samples; v1.0 target is at least 8 replayable and 11 total"
+    },
+    {
+      "id": "clean-clone",
+      "required": true,
+      "status": "pending",
+      "evidence": null
+    },
+    {
+      "id": "privacy-review",
+      "required": true,
+      "status": "passed-local",
+      "evidence": "repository hygiene and generated public-case privacy contracts"
+    },
+    {
+      "id": "remote-ci-candidate-sha",
+      "required": true,
+      "status": "pending",
+      "evidence": null
+    },
+    {
+      "id": "release-tag-and-checksum",
+      "required": true,
+      "status": "pending",
+      "evidence": null
+    }
+  ]
+}

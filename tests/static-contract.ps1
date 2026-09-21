@@ -8,12 +8,22 @@ function Assert-Contract([bool] $Condition, [string] $Message) {
 }
 
 $requiredFiles = @(
-    '.gitattributes', 'README.md', 'SKILL.md', 'HANDOFF.md', 'PROJECT_STATUS.md', 'IMPLEMENTATION_PLAN.md', 'LICENSE', 'cdp.js',
-    'config/risk-actions.json', 'assets/architecture.svg', 'references/机器可读输出.md', 'references/能力缓存.md', 'references/临时数据治理.md', 'references/性能基线.md',
+    '.gitattributes', 'README.md', 'SKILL.md', 'HANDOFF.md', 'PROJECT_STATUS.md', 'IMPLEMENTATION_PLAN.md', 'THREAT_MODEL.md',
+    'VERSION', 'CHANGELOG.md', 'RELEASE_NOTES.md',
+    'CONTRIBUTING.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md', 'SUPPLY_CHAIN.md', 'LICENSE', 'cdp.js',
+    '.github/ISSUE_TEMPLATE/bug.yml', '.github/ISSUE_TEMPLATE/app-profile.yml', '.github/ISSUE_TEMPLATE/security-contact.yml',
+    '.github/ISSUE_TEMPLATE/config.yml', '.github/pull_request_template.md',
+    'config/risk-actions.json', 'config/app-profiles.json', 'config/public-cases.json', 'config/release.json', 'assets/architecture.svg', 'references/机器可读输出.md', 'references/能力缓存.md', 'references/临时数据治理.md',
+    'references/安装升级与卸载.md', 'references/性能基线.md', 'references/应用能力矩阵.generated.md', 'references/应用档案测试模板.md',
+    'references/脱敏真实案例.generated.md', 'references/版本与发布.md', 'references/回滚与恢复.md',
     'scripts/win.ps1', 'scripts/doctor.ps1', 'scripts/doctor-core.ps1', 'scripts/capability-cache.ps1', 'scripts/capability-cache-core.ps1',
     'scripts/cleanup.ps1', 'scripts/cleanup-core.ps1', 'scripts/benchmark.ps1', 'scripts/benchmark-core.ps1', 'scripts/benchmark-uia-fixture.ps1',
-    'scripts/uia-worker.ps1', 'scripts/cdp.js', 'scripts/HuWin.cs',
+    'scripts/uia-worker.ps1', 'scripts/risk-policy-core.ps1', 'scripts/risk-policy.js', 'scripts/generate-app-matrix.ps1', 'scripts/generate-public-cases.ps1', 'scripts/release-check.ps1', 'scripts/cdp.js', 'scripts/HuWin.cs',
     'tests/parse-contract.ps1', 'tests/run-tests.ps1', 'tests/test-runner-contract.ps1', 'tests/ci-contract.ps1',
+    'tests/governance-contract.ps1', 'tests/repository-hygiene-contract.ps1', 'tests/risk-policy-contract.ps1', 'tests/app-profile-catalog-contract.ps1',
+    'tests/profile-test-template.ps1', 'tests/profile-template-contract.ps1',
+    'tests/public-cases-contract.ps1',
+    'tests/release-contract.ps1',
     'tests/doctor-contract.ps1', 'tests/json-output-contract.ps1', 'tests/capability-cache-contract.ps1', 'tests/cleanup-contract.ps1', 'tests/benchmark-contract.ps1',
     'tests/fixtures/doctor/ready.json', 'tests/fixtures/doctor/missing-node.json',
     'tests/fixtures/doctor/stale-helper.json', 'tests/fixtures/doctor/secure-desktop.json',
@@ -50,6 +60,14 @@ $benchmarkEntrypoint = Get-Content -LiteralPath (Join-Path $root 'scripts/benchm
 Assert-Contract ($benchmarkEntrypoint -match 'win-use-master/performance-report-v1') '性能报告 schema 未进入生产入口'
 Assert-Contract ($benchmarkEntrypoint -match 'writeCommandsBenchmarked = 0' -and $benchmarkEntrypoint -match 'realApplicationsStarted = 0' -and $benchmarkEntrypoint -notmatch '(?i)SendInput|--allow-side-effects|eval-unsafe') '性能入口不得绕过安全闸或执行写基线'
 
+foreach ($scriptFile in Get-ChildItem -LiteralPath (Join-Path $root 'scripts'), (Join-Path $root 'tests') -Filter '*.ps1' -File) {
+    foreach ($line in Get-Content -LiteralPath $scriptFile.FullName -Encoding utf8) {
+        if ($line -match 'Get-Command\s+(?:pwsh|node)\b') {
+            Assert-Contract ($line -match 'Select-Object\s+-First\s+1') "$($scriptFile.Name) 的运行时解析必须显式选择首个 Application，避免多 PATH 结果拼接"
+        }
+    }
+}
+
 $compat = Get-Content -LiteralPath (Join-Path $root 'cdp.js') -Raw -Encoding utf8
 Assert-Contract ($compat.Length -le 512) '根目录 cdp.js 应保持轻量兼容入口'
 Assert-Contract ($compat -match 'require\([''"]\./scripts/cdp\.js[''"]\)') '根目录 cdp.js 未转发到 scripts/cdp.js'
@@ -57,28 +75,24 @@ Assert-Contract ($compat -match 'require\([''"]\./scripts/cdp\.js[''"]\)') '根�
 $policyPath = Join-Path $root 'config/risk-actions.json'
 $policy = Get-Content -LiteralPath $policyPath -Raw -Encoding utf8 | ConvertFrom-Json
 Assert-Contract ([string]$policy.schema -eq 'win-use-master/risk-actions-v1') '风险规则 schema 不匹配'
-Assert-Contract (@($policy.blockedTextPatterns).Count -ge 2) '风险文本规则不足'
+Assert-Contract ((@($policy.normalization) -join ',') -ceq 'unicode-nfkc,camel-case-boundary,separator-to-space,collapse-whitespace,trim') '风险规则规范化约定不匹配'
+Assert-Contract (@($policy.blockedTextPatterns).Count -ge 8) '风险文本分类规则不足'
 foreach ($chord in @('Enter','Ctrl+S','Ctrl+Shift+S','Alt+F4')) {
     Assert-Contract (@($policy.blockedKeyChords) -contains $chord) "风险规则缺少按键 $chord"
 }
 Assert-Contract (@($policy.blockedDomSemantics) -contains 'form-submit') '风险规则缺少 form-submit'
 
-function Test-RiskText([string] $Text) {
-    $normalized = $Text.Normalize([Text.NormalizationForm]::FormKC)
-    $normalized = [regex]::Replace($normalized, '([a-z0-9])([A-Z])', '$1 $2') -replace '[_-]+', ' '
-    foreach ($rule in @($policy.blockedTextPatterns)) {
-        Assert-Contract ([string]$rule.flags -in @('', 'i')) "规则 $($rule.id) 使用了跨运行时未约定的 flags"
-        if ([regex]::IsMatch($normalized, [string]$rule.pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) { return $true }
-    }
-    return $false
+foreach ($rule in @($policy.blockedTextPatterns)) {
+    Assert-Contract ([string]$rule.flags -in @('', 'i')) "规则 $($rule.id) 使用了跨运行时未约定的 flags"
+    [void][regex]::new([string]$rule.pattern)
 }
 
-foreach ($sample in @('发送','确认支付','Send','delete account','sendButton','transferFunds')) {
-    Assert-Contract (Test-RiskText $sample) "风险正例未命中：$sample"
+foreach ($profilePath in @('tests/excel-com-profile.ps1', 'tests/wps-et-com-profile.ps1')) {
+    $profileSource = Get-Content -LiteralPath (Join-Path $root $profilePath) -Raw -Encoding utf8
+    Assert-Contract ($profileSource -match '(?s)Write-Output\s+"PASS:.*?\r?\n\}\s*finally\s*\{\s*# Outer privacy boundary:.*?\[IO\.Directory\]::Exists\(\$full\).*?StartsWith\(\$tempRoot,\s*\[StringComparison\]::OrdinalIgnoreCase\).*?Remove-Item\s+-LiteralPath\s+\$full\s+-Recurse') "$profilePath 必须在最外层 finally 中按 temp 根和命名空间边界清理证据"
 }
-foreach ($sample in @('Apply','Continue','Postpone','installation guide','Saved search')) {
-    Assert-Contract (-not (Test-RiskText $sample)) "风险负例被误判：$sample"
-}
+$wpsProfile = Get-Content -LiteralPath (Join-Path $root 'tests/wps-et-com-profile.ps1') -Raw -Encoding utf8
+Assert-Contract ($wpsProfile -match '(?s)\$quit2Requested\s*=\s*\$false.*?finally\s*\{\s*if\s*\(\$app2\s+-and\s+-not\s+\$quit2Requested\).*?\$app2\.Quit\(\)') 'WPS 第二私有实例失败路径必须先尝试关闭自己的工作簿并 Quit'
 
 $svgPath = Join-Path $root 'assets/architecture.svg'
 $svgRaw = Get-Content -LiteralPath $svgPath -Raw -Encoding utf8

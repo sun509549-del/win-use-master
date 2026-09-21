@@ -54,11 +54,53 @@ jobs:
           & pwsh -NoProfile -File tests/static-contract.ps1
           if ($LASTEXITCODE -ne 0) { throw "static-contract.ps1 failed with exit $LASTEXITCODE" }
 
+      - name: Verify cross-runtime final-action policy
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/risk-policy-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "risk-policy-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify machine-readable app profile catalog
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/app-profile-catalog-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "app-profile-catalog-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify safe app profile test template
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/profile-template-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "profile-template-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify redacted real-app public cases
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/public-cases-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "public-cases-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify version, release and rollback contract
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/release-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "release-contract.ps1 failed with exit $LASTEXITCODE" }
+
       - name: Verify CI security and runtime contract
         shell: pwsh
         run: |
           & pwsh -NoProfile -File tests/ci-contract.ps1
           if ($LASTEXITCODE -ne 0) { throw "ci-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Verify threat model and community governance
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/governance-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "governance-contract.ps1 failed with exit $LASTEXITCODE" }
+
+      - name: Scan repository secrets and supply-chain drift
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/repository-hygiene-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw "repository-hygiene-contract.ps1 failed with exit $LASTEXITCODE" }
 
       - name: Verify tiered test runner contract
         shell: pwsh
@@ -147,7 +189,7 @@ jobs:
       - name: Parse CDP JavaScript
         shell: pwsh
         run: |
-          foreach ($path in @('cdp.js', 'scripts/cdp.js', 'tests/cdp-fixture.js')) {
+          foreach ($path in @('cdp.js', 'scripts/cdp.js', 'scripts/risk-policy.js', 'tests/cdp-fixture.js')) {
             & node --check $path
             if ($LASTEXITCODE -ne 0) { throw "JavaScript parse failed: $path" }
           }

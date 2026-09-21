@@ -1,0 +1,361 @@
+{
+  "schema": "win-use-master/app-profile-catalog-v1",
+  "sourceDocument": "references/app档案.md",
+  "freshnessPolicy": {
+    "maxAgeDays": 30,
+    "versionChangeInvalidates": true,
+    "identityChangeInvalidates": true
+  },
+  "profiles": [
+    {
+      "order": 1,
+      "appId": "windows-calculator",
+      "productName": "Windows 计算器",
+      "observedVersion": "11.2607.0.0",
+      "releaseDate": null,
+      "verifiedDate": "2026-09-08",
+      "installKind": "Microsoft Store / MSIX-AppX",
+      "architecture": "x64",
+      "profileStatus": "replayable",
+      "processIdentity": {
+        "executables": ["CalculatorApp.exe", "ApplicationFrameHost.exe"],
+        "hostRelationship": "ApplicationFrameHost.exe hosts the top-level UWP window"
+      },
+      "windowClasses": ["ApplicationFrameWindow"],
+      "capabilities": {
+        "L0": "observed",
+        "L1": "verified-reversible-write",
+        "L2": "not-tested",
+        "L3": "verified-read"
+      },
+      "verifiedTasks": ["Invoke 1+2=3 through UIA and independently read CalculatorResults"],
+      "reversibleStrategy": "Clear the isolated blank calculator and close only the test window",
+      "stopLines": ["networked-conversion-requires-reassessment"],
+      "testPath": "tests/calculator-profile.ps1",
+      "lastResult": "passed",
+      "lastResultDate": "2026-09-08",
+      "evidence": {
+        "rawEvidenceCommitted": false,
+        "publicMetadataContainsSensitiveData": false,
+        "policy": "derived-metadata-only"
+      },
+      "fragileAssumptions": ["Exact Chinese title", "CalculatorResults and button AutomationIds", "UWP host relationship"],
+      "revalidateOn": ["version-change", "package-identity-change", "window-class-change", "automation-id-change"]
+    },
+    {
+      "order": 2,
+      "appId": "windows-notepad",
+      "productName": "记事本",
+      "observedVersion": "11.2607.14.0",
+      "releaseDate": null,
+      "verifiedDate": "2026-09-08",
+      "installKind": "Microsoft Store / MSIX packaged desktop app",
+      "architecture": "x64",
+      "profileStatus": "replayable",
+      "processIdentity": {
+        "executables": ["Notepad.exe"],
+        "hostRelationship": "The packaged desktop app owns its top-level window directly"
+      },
+      "windowClasses": ["Notepad"],
+      "capabilities": {
+        "L0": "observed",
+        "L1": "verified-reversible-write",
+        "L2": "not-tested",
+        "L3": "verified-read"
+      },
+      "verifiedTasks": ["Set and clear a blank Document through ValuePattern while checking text count and tab state"],
+      "reversibleStrategy": "Refuse restored content, clear the test document in normal and failure paths, then close it",
+      "stopLines": ["save", "save-as", "overwrite", "close-user-content"],
+      "testPath": "tests/notepad-profile.ps1",
+      "lastResult": "passed",
+      "lastResultDate": "2026-09-08",
+      "evidence": {
+        "rawEvidenceCommitted": false,
+        "publicMetadataContainsSensitiveData": false,
+        "policy": "derived-metadata-only"
+      },
+      "fragileAssumptions": ["Document ValuePattern", "English Notepad window title", "ContentTextBlock character count"],
+      "revalidateOn": ["version-change", "package-identity-change", "window-class-change", "automation-tree-change"]
+    },
+    {
+      "order": 3,
+      "appId": "windows-settings",
+      "productName": "Windows 11 设置",
+      "observedVersion": "10.0.26100.8875",
+      "releaseDate": null,
+      "verifiedDate": "2026-09-10",
+      "installKind": "Windows built-in system app / AUMID",
+      "architecture": "x64",
+      "profileStatus": "replayable",
+      "processIdentity": {
+        "executables": ["SystemSettings.exe", "ApplicationFrameHost.exe"],
+        "hostRelationship": "SystemSettings.exe content is hosted by an ApplicationFrameHost.exe top-level window"
+      },
+      "windowClasses": ["ApplicationFrameWindow"],
+      "capabilities": {
+        "L0": "observed",
+        "L1": "verified-read",
+        "L2": "not-tested",
+        "L3": "verified-read"
+      },
+      "verifiedTasks": ["Read only the stable SettingsLabel and CommandSearchTextBox identifiers and capture the exact frame"],
+      "reversibleStrategy": "Refuse any existing Settings instance, perform no control action, close only the exact test frame",
+      "stopLines": ["windows-update", "device-toggle", "device-connect-or-remove", "account-change", "computer-rename", "configuration-change"],
+      "testPath": "tests/settings-profile.ps1",
+      "lastResult": "passed",
+      "lastResultDate": "2026-09-10",
+      "evidence": {
+        "rawEvidenceCommitted": false,
+        "publicMetadataContainsSensitiveData": false,
+        "policy": "derived-metadata-only"
+      },
+      "fragileAssumptions": ["Exact localized title", "ApplicationFrameHost relationship", "SettingsLabel and CommandSearchTextBox AutomationIds"],
+      "revalidateOn": ["version-change", "package-identity-change", "window-class-change", "automation-id-change"]
+    },
+    {
+      "order": 4,
+      "appId": "microsoft-excel",
+      "productName": "Microsoft Excel",
+      "observedVersion": "16.0.20326.20132",
+      "releaseDate": null,
+      "verifiedDate": "2026-09-08",
+      "installKind": "Win32 Click-to-Run / Office16",
+      "architecture": "x64",
+      "profileStatus": "replayable",
+      "processIdentity": {
+        "executables": ["EXCEL.EXE"],
+        "hostRelationship": "Excel.Application creates a private /automation -Embedding process"
+      },
+      "windowClasses": ["XLMAIN"],
+      "capabilities": {
+        "L0": "verified-isolated-write",
+        "L1": "observed",
+        "L2": "not-tested",
+        "L3": "verified-read"
+      },
+      "verifiedTasks": ["Create a private workbook, write purchasing rows and SUM formula, save xlsx, then verify its XML outside Excel"],
+      "reversibleStrategy": "Use a private COM process and a temporary workbook; release every COM reference and quit only that process",
+      "stopLines": ["save-user-workbook", "share", "send", "macro", "quit-user-instance"],
+      "testPath": "tests/excel-com-profile.ps1",
+      "lastResult": "passed",
+      "lastResultDate": "2026-09-08",
+      "evidence": {
+        "rawEvidenceCommitted": false,
+        "publicMetadataContainsSensitiveData": false,
+        "policy": "derived-metadata-only"
+      },
+      "fragileAssumptions": ["Excel.Application resolves to the Microsoft x64 registration", "Workbook window appears after Workbooks.Add", "COM references can be fully released"],
+      "revalidateOn": ["version-change", "com-registration-change", "executable-identity-change", "window-class-change"]
+    },
+    {
+      "order": 5,
+      "appId": "wps-spreadsheets",
+      "productName": "WPS 表格",
+      "observedVersion": "12.1.0.23125",
+      "releaseDate": null,
+      "verifiedDate": "2026-09-08",
+      "installKind": "Win32",
+      "architecture": "x86",
+      "profileStatus": "replayable",
+      "processIdentity": {
+        "executables": ["wps.exe", "et.exe"],
+        "hostRelationship": "KET.Application creates a private wps.exe /prometheus /et /Automation process"
+      },
+      "windowClasses": ["XLMAIN", "KLiteMainWindowShadowBorder"],
+      "capabilities": {
+        "L0": "verified-isolated-write",
+        "L1": "observed",
+        "L2": "not-tested",
+        "L3": "verified-read"
+      },
+      "verifiedTasks": ["Create and save a temporary xlsx through KET.Application, verify XML, then reopen it in a second private instance"],
+      "reversibleStrategy": "Use private automation processes and a temporary workbook; leave user WPS processes untouched",
+      "stopLines": ["save-user-workbook", "cloud-sync", "quit-user-instance"],
+      "testPath": "tests/wps-et-com-profile.ps1",
+      "lastResult": "passed",
+      "lastResultDate": "2026-09-08",
+      "evidence": {
+        "rawEvidenceCommitted": false,
+        "publicMetadataContainsSensitiveData": false,
+        "policy": "derived-metadata-only"
+      },
+      "fragileAssumptions": ["KET.Application starts a private process", "XLMAIN is the content window rather than the shadow window", "WPS compatibility registrations may impersonate Excel"],
+      "revalidateOn": ["version-change", "com-registration-change", "executable-identity-change", "window-class-change"]
+    },
+    {
+      "order": 6,
+      "appId": "qq-nt",
+      "productName": "QQ",
+      "observedVersion": "9.9.21.39038",
+      "releaseDate": null,
+      "verifiedDate": "2026-09-08",
+      "installKind": "Portable-directory Electron app",
+      "architecture": "x64",
+      "profileStatus": "read-only-observation",
+      "processIdentity": {
+        "executables": ["QQ.exe", "timwp.exe"],
+        "hostRelationship": "QQ.exe launcher and multi-process Electron runtime; launching again can create a login instance"
+      },
+      "windowClasses": ["Chrome_WidgetWin_1", "Chrome_WidgetWin_0"],
+      "capabilities": {
+        "L0": "observed",
+        "L1": "verified-read",
+        "L2": "not-tested",
+        "L3": "verified-read"
+      },
+      "verifiedTasks": ["Restore the existing minimized main window, read the exposed UIA tree, capture it, then restore minimized state"],
+      "reversibleStrategy": "Do not launch, type, send, or restart; return the observed window to its original minimized state",
+      "stopLines": ["chat-input-write", "send", "forward", "delete-conversation", "login", "switch-account"],
+      "testPath": null,
+      "lastResult": "observed-read-only",
+      "lastResultDate": "2026-09-08",
+      "evidence": {
+        "rawEvidenceCommitted": false,
+        "publicMetadataContainsSensitiveData": false,
+        "policy": "derived-metadata-only"
+      },
+      "fragileAssumptions": ["Largest titled Chrome_WidgetWin_1 is the signed-in main window", "Electron accessibility remains exposed", "Launching QQ creates a second login instance"],
+      "revalidateOn": ["version-change", "executable-identity-change", "window-class-change", "accessibility-tree-change"]
+    },
+    {
+      "order": 7,
+      "appId": "workbuddy-ai",
+      "productName": "WorkBuddy AI",
+      "observedVersion": "5.4.2",
+      "releaseDate": null,
+      "verifiedDate": "2026-09-08",
+      "installKind": "Portable/local Electron app",
+      "architecture": "x64",
+      "profileStatus": "replayable",
+      "processIdentity": {
+        "executables": ["WorkBuddyAI.exe"],
+        "hostRelationship": "Multi-process Electron app; the user must start a dedicated authorized instance with a CDP port"
+      },
+      "windowClasses": ["Chrome_WidgetWin_1", "Chrome_WidgetWin_0"],
+      "capabilities": {
+        "L0": "verified-reversible-write",
+        "L1": "unavailable-observed",
+        "L2": "not-tested",
+        "L3": "verified-read"
+      },
+      "verifiedTasks": ["Insert text into an empty Slate editor through owned CDP, verify send-button state, then SelectAll and Backspace to remove it"],
+      "reversibleStrategy": "Require an empty editor and owned CDP port; remove inserted text without Enter or clicking Send",
+      "stopLines": ["send", "share", "delete-conversation", "restart-for-update", "upload", "existing-draft"],
+      "testPath": "tests/workbuddy-cdp-profile.ps1",
+      "lastResult": "passed",
+      "lastResultDate": "2026-09-08",
+      "evidence": {
+        "rawEvidenceCommitted": false,
+        "publicMetadataContainsSensitiveData": false,
+        "policy": "derived-metadata-only"
+      },
+      "fragileAssumptions": ["The app accepts --remote-debugging-port", "Slate uses data-slate-editor", "The Send button exposes disabled state"],
+      "revalidateOn": ["version-change", "executable-identity-change", "cdp-target-change", "dom-selector-change"]
+    },
+    {
+      "order": 8,
+      "appId": "jianying-pro",
+      "productName": "剪映专业版",
+      "observedVersion": "10.4.0.13957",
+      "releaseDate": null,
+      "verifiedDate": "2026-09-08",
+      "installKind": "Win32 launcher with side-by-side version directories",
+      "architecture": "x64",
+      "profileStatus": "read-only-observation",
+      "processIdentity": {
+        "executables": ["JianyingPro.exe", "VEDetector.exe"],
+        "hostRelationship": "The root launcher may exit after starting a versioned editor or an independent environment detector"
+      },
+      "windowClasses": ["Qt622QWindowIcon", "Chrome_WidgetWin_0"],
+      "capabilities": {
+        "L0": "observed",
+        "L1": "provider-timeout",
+        "L2": "not-tested",
+        "L3": "verified-read"
+      },
+      "verifiedTasks": ["Observe launcher, environment detector, hidden editor state, and visible editor capture without opening a draft or invoking controls"],
+      "reversibleStrategy": "Do not invoke the detector, editor, update, or export controls; return a restored editor to minimized state",
+      "stopLines": ["detector-confirm", "open-draft", "delete-draft", "overwrite-project", "export", "publish", "update-dialog-action"],
+      "testPath": null,
+      "lastResult": "observed-read-only",
+      "lastResultDate": "2026-09-08",
+      "evidence": {
+        "rawEvidenceCommitted": false,
+        "publicMetadataContainsSensitiveData": false,
+        "policy": "derived-metadata-only"
+      },
+      "fragileAssumptions": ["Root launcher and versioned editor remain distinct", "Visible editor UIA provider may exceed the worker deadline", "Hidden windows do not render"],
+      "revalidateOn": ["version-change", "launcher-layout-change", "window-class-change", "uia-provider-change"]
+    },
+    {
+      "order": 9,
+      "appId": "weixin",
+      "productName": "微信",
+      "observedVersion": "4.1.13.12",
+      "releaseDate": null,
+      "verifiedDate": "2026-09-08",
+      "installKind": "Win32 Qt app with a separate Chromium mini-program runtime",
+      "architecture": "x64",
+      "profileStatus": "read-only-observation",
+      "processIdentity": {
+        "executables": ["Weixin.exe", "WeChatAppEx.exe"],
+        "hostRelationship": "The Qt main app and separate Chromium runtime use multiple processes without an observed CDP endpoint"
+      },
+      "windowClasses": ["Qt51514QWindowIcon", "Chrome_WidgetWin_0"],
+      "capabilities": {
+        "L0": "observed",
+        "L1": "unavailable-observed",
+        "L2": "not-tested",
+        "L3": "verified-read"
+      },
+      "verifiedTasks": ["Restore the existing minimized main window, verify full PrintWindow capture and empty UIA tree, then minimize it again"],
+      "reversibleStrategy": "Do not type, send, or restart; restore the observed main window to its original minimized state",
+      "stopLines": ["input-write", "send", "forward", "delete", "switch-account"],
+      "testPath": null,
+      "lastResult": "observed-read-only",
+      "lastResultDate": "2026-09-08",
+      "evidence": {
+        "rawEvidenceCommitted": false,
+        "publicMetadataContainsSensitiveData": false,
+        "policy": "derived-metadata-only"
+      },
+      "fragileAssumptions": ["Qt main window exposes no UIA descendants", "WeChatAppEx has no debugging parameter", "Largest matching Qt window is the main window"],
+      "revalidateOn": ["version-change", "executable-identity-change", "window-class-change", "accessibility-tree-change"]
+    },
+    {
+      "order": 10,
+      "appId": "blender",
+      "productName": "Blender",
+      "observedVersion": null,
+      "releaseDate": null,
+      "verifiedDate": "2026-09-08",
+      "installKind": "not installed on the verification host",
+      "architecture": "unknown",
+      "profileStatus": "not-installed",
+      "processIdentity": {
+        "executables": ["blender.exe"],
+        "hostRelationship": "not observed"
+      },
+      "windowClasses": [],
+      "capabilities": {
+        "L0": "not-installed",
+        "L1": "not-installed",
+        "L2": "not-installed",
+        "L3": "not-installed"
+      },
+      "verifiedTasks": ["Confirm that common command and installation locations contain no Blender installation"],
+      "reversibleStrategy": "No application action was attempted",
+      "stopLines": ["do-not-infer-bpy-or-cli-support-before-installation-and-isolated-verification"],
+      "testPath": null,
+      "lastResult": "not-installed",
+      "lastResultDate": "2026-09-08",
+      "evidence": {
+        "rawEvidenceCommitted": false,
+        "publicMetadataContainsSensitiveData": false,
+        "policy": "derived-metadata-only"
+      },
+      "fragileAssumptions": ["Installation state is host-specific and may change"],
+      "revalidateOn": ["installation-change"]
+    }
+  ]
+}

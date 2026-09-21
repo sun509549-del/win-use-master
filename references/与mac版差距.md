@@ -1,6 +1,6 @@
 # 与 huashu-mac-use 的功能差距
 
-> 基线：上游 [huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use) 的 README/SKILL 所表达的设计，以及用户提供的[相关文章](https://mp.weixin.qq.com/s/pgvLMG7pg_1lpPLMN8zbhg)。本表记录 Windows 版本的工程差距，不把操作系统做不到的能力伪装成待实现功能。更新日期：2026-09-15。
+> 基线：上游 [huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use) 的 README/SKILL 所表达的设计，以及用户提供的[相关文章](https://mp.weixin.qq.com/s/pgvLMG7pg_1lpPLMN8zbhg)。本表记录 Windows 版本的工程差距，不把操作系统做不到的能力伪装成待实现功能。更新日期：2026-09-21。
 
 ## 已经对齐
 
@@ -42,13 +42,21 @@
 | 应用能力经验的保守复用 | `capability-cache-v1` 只保存产品/版本/exe 名、窗口类与 COM/CDP/UIA 观察；30 天或版本变化失效，`--no-cache` 可禁用，伪造缓存不能参与任何写授权 |
 | 临时证据治理的安全预演 | `cleanup-plan-v1` 只读检查 temp namespace、manifest、到期、owner 和 reparse point；summary 脱敏，`--apply` 未开放，不把“同名前缀”当删除授权 |
 | 可重复的性能观察 | `performance-report-v1` 已覆盖 windows 首次/重复进程、100/300/1000 合成 UIA 与临时无头 Edge 的只读 CDP inspect；聚合报告不含正文/路径/selector，安全超时不因基线放宽 |
+| 可审计安全与公开协作 | `THREAT_MODEL.md` 将 9 类风险映射到控制/测试/残余风险；贡献、安全、行为规范和脱敏 Issue/PR 模板由 governance 契约与 CI 守护 |
+| 供应链与敏感文件门 | `SUPPLY_CHAIN.md` 记录零包依赖、固定 SHA Action 与许可证；repository hygiene 契约扫描高置信凭据、误入库证据/二进制、manifest 与 workflow 漂移，且不上传匹配内容 |
+| 最终动作规则跨运行时一致性 | JSON 声明 NFKC/camelCase/分隔符/空白规范化；UIA/L2 PowerShell 与 CDP Node 解释器用同一组 12 正例、15 负例覆盖 8 条规则，并对无效策略失败关闭 |
+| 对外入门与安装生命周期 | README 提供五分钟只读体验和 English Quick Start；独立指南覆盖 skills CLI/Git 升级、精确卸载、本地缓存/session/helper/evidence 清单与非递归清理边界 |
+| 机器可读应用档案 | `app-profile-catalog-v1` 编码版本、进程/宿主、窗口类、L0–L3、任务、停手线、测试和复验条件；脚本确定性生成 6/3/1 能力矩阵，契约守住脱敏与测试映射 |
+| 新应用档案测试骨架 | `profile-test-plan-v1` 将版本、只读探测、身份、选层、before、可逆/隔离动作、独立验证、回滚、清理和经验回流固化为十阶段；默认退出 2，计划模式零副作用 |
+| 三类公开派生案例 | 记事本 UIA、WorkBuddy CDP、Excel COM 已按探测→选层→动作→验证→清理生成脱敏文字案例；契约禁止输入正文、绝对路径、动态标识和 fixture 冒充真实视觉素材 |
+| 可审计版本与回滚生命周期 | `release-manifest-v1` 统一 `VERSION`、Changelog、Release Notes 和八项发布门；只读检查器在证据不足时退出 2，回滚要求新目录、精确已验证 tag、重新构建和本地状态失效，不覆盖当前工作区 |
 
 ## 仍缺少或样本不足
 
 | 优先级 | 差距 | 当前状态 / 完成标准 |
 |---|---|---|
 | P1 | 真实 app 档案广度 | 可重放档案六个：计算器、记事本、WorkBuddy、Excel、WPS 表格，以及零写入的 Windows 设置；另有 QQ、微信、剪映三个只读观察档案。Mac 11 个 app；Windows 9 个，Blender 与微信/QQ 的写路径仍未测。 |
-| P1 | 面向用户的真实案例素材不足 | 分层控制、安全边界与证据闭环架构图已经补齐；仍缺经脱敏的 Windows 原生/UIA/CDP 真实案例或 GIF，且不能拿测试 fixture 冒充生产案例。 |
+| P1 | 面向用户的视觉案例素材不足 | UIA/CDP/COM 三类真实回归的脱敏文字案例已经补齐；仍缺经人工复核的真实应用截图或 GIF，且不能拿测试 fixture、示意图或重建画面冒充生产案例。 |
 | P1 | 单 app 经验的广度不足 | Mac 档案覆盖多个 Electron 和原生 app；Windows 需要随真实任务渐进积累，不能凭框架名称推断 UIA/CDP/截图一定可用。 |
 | P2 | 翻车过程文档 | `references/踩坑实录.md` 已记录 23 条现象→归因→落点→证据，另有“哪些 Mac 结论在 Windows 上不成立”一节。比 Mac 的 519 行薄，但每条都对应本项目的代码改动、测试或档案条目。 |
 
@@ -62,4 +70,4 @@ Mac 版可以先尝试向指定 PID 投递合成事件，失败后再借焦点�
 
 1. 剪映 CEF `--remote-debugging-port` 与更新弹窗（需用户授权重启/显示）作为第二个 Chromium 实现。
 2. 微信、Blender 等补样本；QQ 输入框写路径需用户指定可逆目标。系统设置只读样本已完成，不为“覆盖率”调用会改变配置的控件。
-3. 经脱敏的真实案例素材与 `踩坑实录.md`。
+3. 补充经人工复核的真实截图/GIF，并在专用空闲桌面、干净 clone 与目标 SHA 上闭合当前未发布候选的发布门。

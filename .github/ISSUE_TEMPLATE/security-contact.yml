@@ -1,0 +1,27 @@
+name: Security/private contact request
+description: 仅请求建立私密沟通渠道；不要填写任何漏洞或个人信息
+title: "[Private contact request]"
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这是公开 Issue，只用于请求私密联络。不要在标题、选项、评论或附件中描述漏洞、受影响目标、复现步骤、个人信息或证据。若仓库 Security 页面有 Report a vulnerability，请优先使用该私密入口。
+  - type: dropdown
+    id: request_type
+    attributes:
+      label: 联络类别
+      options:
+        - Potential security vulnerability
+        - Privacy concern
+        - Sensitive conduct report
+    validations:
+      required: true
+  - type: checkboxes
+    id: public_safety
+    attributes:
+      label: 公开信息确认
+      options:
+        - label: 我确认此请求不包含技术细节、身份信息、复现步骤、截图、日志、token、路径或其他证据，并会等待私密渠道。
+          required: true

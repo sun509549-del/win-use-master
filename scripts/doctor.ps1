@@ -114,18 +114,14 @@ function Get-HelperFact {
 
 function Get-ContractFact {
     $riskPath = Join-Path $root 'config\risk-actions.json'
+    $riskCorePath = Join-Path $PSScriptRoot 'risk-policy-core.ps1'
     $riskValid = $false
     $riskSchema = 'unavailable'
     try {
-        $policy = Get-Content -LiteralPath $riskPath -Raw -Encoding utf8 | ConvertFrom-Json
+        . $riskCorePath
+        $policy = Import-WinUseRiskPolicy $riskPath
         $riskSchema = [string]$policy.schema
-        $riskValid = $riskSchema -eq 'win-use-master/risk-actions-v1' -and
-            @($policy.blockedTextPatterns).Count -gt 0 -and
-            @($policy.blockedKeyChords) -contains 'Enter' -and
-            @($policy.blockedDomSemantics) -contains 'form-submit'
-        if ($riskValid) {
-            foreach ($rule in @($policy.blockedTextPatterns)) { [void][regex]::new([string]$rule.pattern) }
-        }
+        $riskValid = $true
     } catch { $riskValid = $false }
 
     $schemaSources = [ordered]@{

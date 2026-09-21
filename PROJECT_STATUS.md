@@ -1,6 +1,6 @@
 # win-use-master 项目状态与完善路线
 
-> 状态快照：2026-09-15
+> 状态快照：2026-09-21
 > 适用对象：项目维护者、贡献者、评审者，以及后续接手的开发者
 > 说明：本文区分“已经实现”“本地已验证”和“远程/桌面发布门已通过”，不能把局部测试成功等同于完整发布通过。
 
@@ -10,7 +10,7 @@
 
 `win-use-master` 已经从“Mac 工具的 Windows 移植想法”发展为一个可安装的 Windows Agent Skill：它能先只读探测应用，再在 L0 应用原生接口、L1 UI Automation、L2 安全门控的前台输入、L3 截图取证之间选择最可靠的路径，并为动作保留机器可读的验证收据。
 
-当前更适合定义为 **Beta / 工程预览版**，而不是“支持所有 Windows 软件的通用自动化产品”。核心控制面、安全拒绝、证据链和六个可重放真实应用档案已经形成；进入 v1.0 前最重要的工作不是继续堆命令，而是完成一次不受用户键鼠干扰的发布级桌面回归、扩充真实应用样本、补齐公开项目治理材料，并把当前本地增强提交后交给远程 CI 验证。
+当前更适合定义为 **Beta / 工程预览版**，而不是“支持所有 Windows 软件的通用自动化产品”。核心控制面、安全拒绝、证据链、威胁模型、社区治理、版本/回滚契约和六个可重放真实应用档案已经形成；进入 v1.0 前最重要的工作不是继续堆命令，而是完成不受用户键鼠干扰的发布级桌面回归、扩充真实应用样本、补充经人工复核的视觉案例，并在干净 clone 与候选 SHA 上闭合发布证据。
 
 | 方面 | 当前判断 | 依据 |
 |---|---|---|
@@ -18,10 +18,10 @@
 | 只读探测与取证 | 可用 | `probe/windows/see/shot/screen/uia/uiaread/CDP` 已覆盖主要信息面 |
 | 结构化写入 | 可用但依赖应用 | UIA、CDP、Excel/WPS COM 均有实现和真实样本 |
 | 坐标输入 | 有意保持受限 | 只能短暂借前台，必须通过桌面、权限、空闲、焦点和遮挡检查 |
-| 安全与隐私 | 基础较完整 | 风险规则、超时、owner 校验、脱敏收据、退出码 2 语义已经统一 |
+| 安全与隐私 | 模型与基础治理已形成 | 风险规则、威胁矩阵、超时、owner 校验、脱敏收据、披露流程和退出码 2 语义已经统一 |
 | 自动化测试 | 大部分已覆盖 | 静态、CDP、UIA 超时/读取、窗口状态等测试存在；完整桌面 smoke 尚待本批复跑 |
 | 真实应用覆盖 | 中等 | 6 个可重放档案，3 个只读观察档案；仍低于上游 Mac 版样本广度 |
-| 发布成熟度 | 尚未封版 | 无桌面契约已闭环，完整 Desktop/Coordinate 发布门仍待执行 |
+| 发布成熟度 | `0.1.0-beta.1` 未发布候选 | manifest、Changelog、Release Notes、只读发布检查与回滚边界已形成；完整 Desktop/Coordinate 等发布门仍待执行 |
 
 ## 2. 项目定位与设计理念
 
@@ -128,6 +128,10 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 - [`references/app档案.md`](references/app档案.md) 保存真实应用版本、身份、可重放路径和限制。
 - [`references/踩坑实录.md`](references/踩坑实录.md) 已沉淀 23 条可复现问题，并记录哪些 Mac 结论不能直接套到 Windows。
 - [`references/与mac版差距.md`](references/与mac版差距.md) 持续跟踪功能对齐、平台差异和样本缺口。
+- [`THREAT_MODEL.md`](THREAT_MODEL.md) 将 9 类威胁映射到控制、测试、残余风险和停手线。
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)、[`SECURITY.md`](SECURITY.md)、[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) 与 GitHub Issue/PR 模板已形成公开协作边界。
+- [`SUPPLY_CHAIN.md`](SUPPLY_CHAIN.md) 记录零包管理依赖、运行时、固定 SHA 的 CI Action、许可证和升级审查规则。
+- [`references/安装升级与卸载.md`](references/安装升级与卸载.md) 区分 OpenAI Skill 规范与第三方 skills CLI，并给出精确升级/卸载、本地数据清单和非递归清理边界。
 
 ## 4. 当前命令能力清单
 
@@ -172,7 +176,7 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 | 微信 4.1.13 | Qt5 UIA 基本为空，未发现可用 CDP | 尚无可靠语义写路径，不应直接降级为盲点坐标 |
 | 剪映 10.4 | Qt6 provider 可能挂死，隔离 worker 能保护主流程 | 主编辑器、CDP 可行性和更新弹窗尚未在用户授权重启条件下验证 |
 
-共计 9 个应用有实测记录，其中 6 个形成可重放档案。Blender 尚未安装和验证。完整细节以 [`references/app档案.md`](references/app档案.md) 为准。
+共计 9 个应用有实测记录，其中 6 个形成可重放档案；Blender 仅作为“本机未安装”占位，不计入样本。人工细节以 [`references/app档案.md`](references/app档案.md) 为准，版本化字段与自动汇总见 [`config/app-profiles.json`](config/app-profiles.json) 和 [`references/应用能力矩阵.generated.md`](references/应用能力矩阵.generated.md)。
 
 ## 6. 测试与验证状态
 
@@ -190,6 +194,13 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 | `tests/test-runner-contract.ps1` | 层选择、显式 profile、dry-run/实际执行、报告隐私和覆盖保护 | 无桌面 |
 | `tests/ci-contract.ps1` | 只读权限、action 完整 SHA、Node 22/24 矩阵、禁用无用缓存 | 无桌面 |
 | `tests/static-contract.ps1` | 发布文件、风险规则、README 链接、SVG 安全、Skill 体积 | 无桌面 |
+| `tests/release-contract.ps1` | SemVer 真相源、候选文档同步、发布门、只读检查器、零副作用与安全回滚 | 无桌面 |
+| `tests/risk-policy-contract.ps1` | UIA/L2 PowerShell 与 CDP Node 的 NFKC/camel/separator 规范化、12 个正例、15 个负例和非法策略拒绝 | 无桌面 + Node |
+| `tests/app-profile-catalog-contract.ps1` | 10 条目录 schema、6/3/1 分类、档案测试映射、脱敏、失效策略与确定性矩阵 | 无桌面 |
+| `tests/profile-template-contract.ps1` | 十阶段真实档案计划、默认退出 2、目录绑定、安全不变量、摘要隐私和仓库零修改 | 无桌面 |
+| `tests/public-cases-contract.ps1` | UIA/CDP/COM 三类派生案例、目录/来源测试一致性、输入/路径脱敏、确定性生成和视觉素材禁冒充 | 无桌面 |
+| `tests/governance-contract.ps1` | 威胁 ID/测试映射、安全披露、贡献规范、Issue Forms 与 PR 模板 | 无桌面 |
+| `tests/repository-hygiene-contract.ps1` | 高置信凭据、证据/二进制、包清单、CI Action 白名单和许可证漂移 | 无桌面 |
 | `tests/cdp-ownership.ps1` | 错误端口 owner 拒绝、正确 owner 接受 | 本地 fixture |
 | `tests/cdp-action-receipt.ps1` | `inspect` JSON/摘要、动作收据、脱敏、失败、超时、会话重授权、临时进程清理 | 无头 Edge/Node |
 | `tests/uia-read-contract.ps1` | 精确/前缀/类型/子树组合、正文延迟读取、分页与 continuation 失效 | 无桌面 provider fixture |
@@ -201,7 +212,7 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 
 ### 6.2 本批已获得的证据
 
-- 统一调度器的完整 Contract 层已通过 14/14：parse、build、doctor、static、CI 配置、JSON output、capability cache、cleanup、benchmark、UIA read、window state、CDP ownership、CDP action receipt、UIA timeout。
+- 统一调度器的完整 Contract 层已通过 21/21：parse、build、doctor、static、release、risk policy、app profile catalog、profile template、public cases、governance、repository hygiene、CI 配置、JSON output、capability cache、cleanup、benchmark、UIA read、window state、CDP ownership、CDP action receipt、UIA timeout。
 - `doctor` 的干净、缺 Node、helper 过期、安全桌面和历史残留五类 fixture 已通过；端到端检查确认主入口在 helper 自动构建前分发，JSON/摘要不含绝对路径，冲突选项退出 2。
 - JSON output fixture 已通过：`probe`、窗口状态、五类窗口/UIA 报告与 CDP target 均守住 schema、unknown/null、URL 清理、摘要脱敏和参数误拼失败关闭；`windows/frontmost/idle`、`probe` 未命中和 CDP list 均有端到端 JSON 解析。
 - capability cache 契约已通过：缓存记录只保留低敏感白名单，30 天与版本变化失效，show 不改文件，summary 不列 entry，禁用开关阻断读写；伪造 `trusted/allowWrite/L2` 字段被丢弃且不能绕过 CDP session。
@@ -209,9 +220,11 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 - performance 契约已通过：quick/no-CDP 报告含 windows 首次/重复进程与 100/300/1000 UIA 聚合统计，stdout/privacy/副作用字段和仓库逐文件零修改均符合契约；标准档另以临时无头 Edge 完成 5 次 CDP inspect，并确认 profile 与专属 Edge 进程无残留。首版数值见 [`references/性能基线.md`](references/性能基线.md)。
 - UIA 限定查询 fixture 已通过：精确条件由 provider 求交，前缀与子树只在元数据阶段筛选，页外元素不读取 Value；continuation 能稳定前进，并在树指纹或 HWND 变化时先拒绝再读正文。
 - 调度器契约已验证显式 profile、`-TestId` 子集、dry-run、真实 parse 执行、报告不含绝对路径/原始输出，以及已有报告默认拒绝覆盖。
+- Excel/WPS 档案已把临时截图和工作簿清理提升到最外层 `finally`；WPS 第二私有实例的失败路径会先尝试关闭自有工作簿并 Quit。静态契约要求 temp 根、项目叶名前缀和递归删除同时存在，真实应用未在本轮启动。
 - CI 已拆为核心 job 与 Node 22/24 CDP 矩阵，第三方 action 固定到完整 commit 并关闭不需要的包缓存；本机 Node 24 与 YAML/静态契约已通过，Node 22 结论以目标提交的远程 Actions 为准。
 - PowerShell 语法解析、JavaScript 语法解析和差异空白检查通过。
 - 静态发布契约与 Skill quick validation 通过。
+- `0.1.0-beta.1` 的版本真相源、Changelog、Release Notes 草案、发布门和回滚说明已建立；`release-check.ps1` 在缺少桌面、档案、干净 clone、远程 CI 与 tag 证据时按设计退出 2，且不写文件或 Git 状态。
 - UIA 精确读取契约通过。
 - 窗口状态迁移与版本化结果契约通过；真实前台窗口的 `minimize --dry --json --summary` 返回 `planned/not-applied`，未改变窗口。
 - CDP owner 校验通过。
@@ -225,14 +238,14 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 - `smoke.ps1 -RequireCoordinate` 的发布级 L2 真实输入回归尚待专门空闲窗口执行。
 - `capture-recovery.ps1` 和设置档案应在封版前与本批变更一起复跑。
 - Windows 设置档案为了不复用或关闭用户现有设置窗口，本批没有在检测到既有实例时强行执行。
-- UIA 读取、UIA 超时和窗口状态契约已经纳入 CI；仍不能用本地结果替代目标提交的远程 GitHub Actions 结果。
+- UIA 读取、UIA 超时和窗口状态契约已经纳入 CI；公开提交 `bb423a4` 的 Core Node 24、CDP Node 22/24 均已通过。当前治理增量仍需在推送后核对其目标 SHA。
 
 ## 7. 本次候选范围与发布口径
 
 截至本快照：
 
-- 当前本地候选基于上一份已通过 Node 22/24 远程 CI 的公开基线，新增只读 `doctor`、UIA 限定查询/安全分页、M2-03 机器可读结果、M2-04 建议性能力缓存、M2-05 cleanup dry-run 与 M2-06 只读性能基线、对应 fixture 和文档；本批尚未提交或推送。
-- 本地无桌面 Contract 层已经 14/14 通过。Desktop、Coordinate 和设置档案复验仍是独立发布门，不能由云 CI 替代。
+- 公开 `main` 已包含只读 `doctor`、UIA 限定查询/安全分页、机器可读结果、建议性能力缓存、cleanup dry-run 与只读性能基线；提交 `bb423a4` 的远程 Windows CI 三个 job 全绿。
+- 当前本地候选在该公开基线上增加威胁模型、贡献/安全/行为规范、供应链清单、Issue/PR 模板、跨运行时风险解释器、机器可读应用档案目录、确定性能力矩阵、默认拒绝的十阶段测试模板、UIA/CDP/COM 三类脱敏文字案例，以及 `0.1.0-beta.1` 未发布 manifest、Changelog、Release Notes、发布检查和回滚契约；完整无桌面 Contract 层已 21/21 通过，本轮增量尚未提交或推送。
 - 对外说明应区分：“代码已经实现”“本地契约已验证”“目标提交远程 CI 已验证”“真实桌面已验证”四种状态。
 - 发布状态和远程 SHA 以 Git 历史及 GitHub Actions 为准；本文不保存容易过期的“未跟踪文件数量”或“最新提交 SHA”。
 
@@ -250,16 +263,16 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 ### P1：提高真实可用性和 OSS 可信度
 
 1. **把可重放应用档案扩到至少 11 个。** 优先补 Blender 的原生脚本/CLI 路径、第二个 Chromium/CEF 样本，以及一个非 Office 的原生 Windows 应用。
-2. **补脱敏的真实案例素材。** 为 UIA、CDP、COM 各准备一段真实 Windows 案例截图或短 GIF；不得用测试 fixture 冒充生产应用，也不得泄露账号、设备名或编辑器正文。
+2. **补脱敏的真实案例视觉素材。** UIA、CDP、COM 三类文字派生案例及隐私契约已经完成；仍需从真实 Windows 回归中各挑选截图或短 GIF，完成人工脱敏复核。不得用测试 fixture、示意图或重建画面冒充生产应用。
 3. **谨慎探索 QQ、微信、剪映。** QQ 只能在用户指定可逆目标后测试写入；微信没有可靠语义层时继续保持只读；剪映的 CDP/更新弹窗测试需要用户授权重启或显示窗口。
-4. **补齐开源治理文件。** 建议增加 `CONTRIBUTING.md`、`SECURITY.md`、行为准则、Issue/PR 模板、版本策略和中英文快速开始；这些会直接提高外部评审与贡献效率。
-5. **加强供应链检查。** 在 CI 中加入凭据/敏感信息扫描、依赖和许可证检查，并明确第三方工具版本；不要让扫描器自动上传本地证据。
+4. **完成仓库侧治理设置。** 威胁模型、贡献/安全/行为规范、Issue/PR 模板、版本策略、变更日志和英文快速开始已经完成；仍需仓库所有者在 GitHub 设置中开启私密漏洞报告，并逐个候选核对远程保护规则。
+5. **继续供应链运维。** CI 已加入不上传内容的高置信凭据/证据/依赖/Action/许可证检查，并记录当前零包依赖；仍需定期复核固定 Action、runner 镜像与历史提交，并在仓库设置中开启私密漏洞报告。
 
 ### P2：面向稳定版的工程化
 
-1. 为应用档案设计机器可读 schema，自动生成能力矩阵，减少手工文档与实际测试漂移。
-2. 建立 tag、Changelog、Release Notes 和安装升级/回滚说明；定义 Beta 到 v1.0 的兼容承诺。
-3. Node.js 22/24 CDP 矩阵已在上一公开基线的远程 CI 通过；每个新候选仍需重跑。剩余工作是用真实机定期回归 Windows 10/11 差异，而不是假装单一云 runner 能覆盖全部桌面行为。
+1. 应用档案机器可读 schema 与确定性能力矩阵首版已完成；后续新增/升级应用必须同步目录、人工正文和对应测试，由契约阻止分类、隐私及生成结果漂移。
+2. Changelog、Release Notes 草案、版本/回滚规则和 Beta→v1.0 兼容承诺首版已完成；仍需在全部发布门通过且获得明确授权后创建不可移动 tag、源码校验和与实际 Release，并验证真实 previous stable 回滚。
+3. Node.js 22/24 CDP 矩阵已在公开提交 `bb423a4` 的远程 CI 通过；每个新候选仍需重跑。剩余工作是用真实机定期回归 Windows 10/11 差异，而不是假装单一云 runner 能覆盖全部桌面行为。
 4. 评估 helper 构建完整性、可选签名和发布校验和；生成的 DLL 仍不必提交，但发布过程必须可复现。
 5. 将 23 条踩坑中能编码解决的内容继续转化为探测、拒绝或测试，只保留真正依赖应用版本的易腐经验。
 6. 扩展性能第二阶段：在专用空闲桌面测 PrintWindow 成功/超时/sibling recovery，并为 CDP `insert/press` 设计另行授权、隔离、可撤回的写基线；不得借性能优化削弱安全闸。
@@ -315,6 +328,11 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 | 当前完成度、缺口和 v1.0 路线 | 本文 |
 | 未来阶段、任务拆分、工期和验收门 | [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) |
 | 接手维护、测试与发布 | [`HANDOFF.md`](HANDOFF.md) |
+| 资产、信任边界、威胁和残余风险 | [`THREAT_MODEL.md`](THREAT_MODEL.md) |
+| 贡献要求与安全披露 | [`CONTRIBUTING.md`](CONTRIBUTING.md)、[`SECURITY.md`](SECURITY.md) |
+| 运行时、CI Action、许可证与依赖升级 | [`SUPPLY_CHAIN.md`](SUPPLY_CHAIN.md) |
+| Skill 升级、卸载和本地数据清理 | [`references/安装升级与卸载.md`](references/安装升级与卸载.md) |
+| 版本、候选发布门和回滚 | [`references/版本与发布.md`](references/版本与发布.md)、[`references/回滚与恢复.md`](references/回滚与恢复.md) |
 | 四层控制面如何选择 | [`references/控制面详解.md`](references/控制面详解.md) |
 | 权限、锁屏、截图和 provider 故障 | [`references/权限与故障.md`](references/权限与故障.md) |
 | 收据、哈希、脱敏和证据归档 | [`references/取证规范.md`](references/取证规范.md) |
@@ -324,4 +342,4 @@ Windows 版保留了这套方法，同时接受 Windows 的平台现实：没有
 
 ## 13. 最终判断
 
-项目最有价值的部分已经不是“Windows 上也能点按钮”，而是形成了明确的控制面优先级、安全拒绝条件和证据闭环。下一阶段应把重心从继续增加表面命令，转向发布级回归、真实应用广度、隐私审计和开源治理。完成 P0 后可以发布一个可信的 Beta；完成 P1 并满足第 10 节验收标准后，再考虑 v1.0。
+项目最有价值的部分已经不是“Windows 上也能点按钮”，而是形成了明确的控制面优先级、安全拒绝条件、证据闭环、可审计威胁模型和失败关闭的发布门。下一阶段应把重心转向发布级桌面回归、真实应用广度、候选 SHA 远程验证与视觉案例人工脱敏。完成 P0 后可以发布一个可信的 Beta；完成 P1 并满足第 10 节验收标准后，再考虑 v1.0。

@@ -10,6 +10,8 @@ $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
 $tempDir = Join-Path $tempBase ('win-use-master-capability-cache-test-' + [Guid]::NewGuid().ToString('N'))
 $cachePath = Join-Path $tempDir 'capability-cache-v1.json'
 $probePath = Join-Path $tempDir 'probe-report.json'
+$pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
 function Assert-Contract([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw "capability cache contract: $Message" }
@@ -37,7 +39,7 @@ function Invoke-Process([string] $FileName, [string[]] $Arguments) {
 }
 
 function Invoke-Win([string[]] $Arguments) {
-    return Invoke-Process (Get-Command pwsh -ErrorAction Stop).Source (@('-NoProfile','-File',$win) + $Arguments)
+    return Invoke-Process $pwsh (@('-NoProfile','-File',$win) + $Arguments)
 }
 
 [IO.Directory]::CreateDirectory($tempDir) | Out-Null
@@ -162,7 +164,7 @@ try {
     Remove-Item Env:\WIN_USE_MASTER_CAPABILITY_CACHE -ErrorAction SilentlyContinue
 
     $env:WIN_USE_MASTER_CDP_SESSION = Join-Path $tempDir 'missing-session.json'
-    $cdpWrite = Invoke-Process (Get-Command node -ErrorAction Stop).Source @($cdp,'65534','click','fixture-target','#safe')
+    $cdpWrite = Invoke-Process $node @($cdp,'65534','click','fixture-target','#safe')
     Assert-Contract ($cdpWrite.exitCode -eq 2 -and $cdpWrite.stderr -match '有效授权会话') '伪造 capability cache 不得绕过 CDP session 授权'
     $cdpSource = Get-Content -LiteralPath $cdp -Raw -Encoding utf8
     Assert-Contract ($cdpSource -notmatch 'capability-cache|CapabilityCache') 'CDP 写入口不得加载能力缓存'
@@ -180,8 +182,8 @@ try {
     $unsafe = Invoke-Win @('cache','clear','--all')
     Assert-Contract ($unsafe.exitCode -eq 2 -and [IO.File]::Exists($victim)) '未启用测试边界时自定义删除路径必须拒绝且保留文件'
 
-    $noCacheProbe = Invoke-Process (Get-Command pwsh -ErrorAction Stop).Source @(
-        '-NoProfile','-File',$probeScript,(Get-Command pwsh -ErrorAction Stop).Source,'--json','--summary','--no-cache'
+    $noCacheProbe = Invoke-Process $pwsh @(
+        '-NoProfile','-File',$probeScript,$pwsh,'--json','--summary','--no-cache'
     )
     Assert-Contract ($noCacheProbe.exitCode -eq 0 -and -not $noCacheProbe.stderr) 'probe --no-cache 应在不读取无效 override 的情况下成功'
     $noCacheReport = $noCacheProbe.stdout | ConvertFrom-Json

@@ -23,6 +23,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $win = Join-Path $root 'scripts\win.ps1'
 $evidence = Join-Path ([IO.Path]::GetTempPath()) ("win-use-master-wps-$([Guid]::NewGuid().ToString('N'))")
 [IO.Directory]::CreateDirectory($evidence) | Out-Null
+try {
 Add-Type -AssemblyName System.Drawing.Common -ErrorAction SilentlyContinue
 Add-Type -Path (Join-Path $root 'scripts\HuWin.dll')
 
@@ -129,7 +130,7 @@ Write-Output 'file: D5 formula=SUM(D2:D4) cached=3640 (verified without WPS PASS
 # Business side effect from a second private instance: the file WPS wrote can be
 # reopened and yields the same total.
 $before2 = Get-WpsFamilyPids
-$app2 = $null; $pid2 = 0
+$app2 = $null; $pid2 = 0; $quit2Requested = $false
 try {
     $app2 = New-Object -ComObject KET.Application; Keep $app2
     $app2.DisplayAlerts = $false
@@ -144,8 +145,16 @@ try {
     if ([string]$ws2.Name -ne 'win-use-master' -or $reopened -ne 3640) { throw "重新打开后 sheet=$($ws2.Name) D5=$reopened，与保存前不一致。" }
     Write-Output "reopen: second private instance pid=$pid2 D5=$reopened sheet=$($ws2.Name) PASS"
     $wb2.Close($false)
+    $quit2Requested = $true
     $app2.Quit()
 } finally {
+    if ($app2 -and -not $quit2Requested) {
+        try {
+            $open2 = $app2.Workbooks
+            foreach ($item2 in @($open2)) { try { $item2.Close($false) } catch { } }
+            if ([int]$open2.Count -eq 0) { $app2.Quit() }
+        } catch { }
+    }
     Release-All
     $app2 = $null
 }
@@ -159,9 +168,13 @@ foreach ($id in $leftover) {
     Write-Output "leftover: pid=$id ppid=$($row.ParentProcessId) kind=$kind ours=$($newPids -contains $id -or $id -eq $pid2)"
 }
 Write-Output "PASS: WPS 表格 12.x KET.Application profile private-instance write→readback→UIA/L3→save→file-verified→reopen quit-exited=$exited leftover-pids=$($leftover.Count) focus=0s"
-
-$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-$full = [IO.Path]::GetFullPath($evidence)
-if ($full.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($full).StartsWith('win-use-master-wps-')) {
-    Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
+} finally {
+    # Outer privacy boundary: later XML/reopen failures still remove this run's evidence.
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $full = [IO.Path]::GetFullPath($evidence)
+    if ([IO.Directory]::Exists($full) -and
+        $full.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFileName($full).StartsWith('win-use-master-wps-', [StringComparison]::Ordinal)) {
+        Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }

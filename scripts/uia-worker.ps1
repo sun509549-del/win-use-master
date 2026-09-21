@@ -14,38 +14,22 @@ function Complete-Worker($Payload, [int] $Code = 0) {
     exit $Code
 }
 
+$riskPolicyCorePath = Join-Path $PSScriptRoot 'risk-policy-core.ps1'
+if (-not (Test-Path -LiteralPath $riskPolicyCorePath -PathType Leaf)) {
+    Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy interpreter unavailable' } 2
+}
+try { . $riskPolicyCorePath }
+catch { Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy interpreter invalid' } 2 }
+
 function Get-RiskPolicy {
     $path = Join-Path (Split-Path -Parent $PSScriptRoot) 'config\risk-actions.json'
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy unavailable' } 2
-    }
-    try {
-        $policy = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json
-    } catch {
-        Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy invalid' } 2
-    }
-    if ([string]$policy.schema -ne 'win-use-master/risk-actions-v1' -or
-        -not @($policy.blockedTextPatterns).Count -or
-        @($policy.blockedKeyChords) -notcontains 'Enter' -or
-        @($policy.blockedDomSemantics) -notcontains 'form-submit') {
-        Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy schema mismatch' } 2
-    }
-    return $policy
+    try { return Import-WinUseRiskPolicy $path }
+    catch { Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy unavailable or invalid' } 2 }
 }
 
 function Find-BlockedActionRule($Policy, [string] $Text) {
-    $normalized = if ($null -eq $Text) { '' } else { $Text.Normalize([Text.NormalizationForm]::FormKC) }
-    $normalized = [regex]::Replace($normalized, '([a-z0-9])([A-Z])', '$1 $2') -replace '[_-]+', ' '
-    foreach ($rule in @($Policy.blockedTextPatterns)) {
-        try {
-            if ([regex]::IsMatch($normalized, [string]$rule.pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
-                return [string]$rule.id
-            }
-        } catch {
-            Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy pattern invalid' } 2
-        }
-    }
-    return $null
+    try { return Find-WinUseBlockedTextRule $Policy $Text }
+    catch { Complete-Worker @{ ok = $false; refused = $true; error = 'risk policy match failed' } 2 }
 }
 
 function Public-Element($Item) {

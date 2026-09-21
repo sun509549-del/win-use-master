@@ -46,6 +46,13 @@ $catalog = @(
     New-TestDefinition 'build' 'Contract' 'scripts/build.ps1' @() $false $false 60
     New-TestDefinition 'doctor' 'Contract' 'tests/doctor-contract.ps1' @() $false $false 45
     New-TestDefinition 'static' 'Contract' 'tests/static-contract.ps1' @() $false $false 30
+    New-TestDefinition 'risk-policy' 'Contract' 'tests/risk-policy-contract.ps1' @() $false $false 30
+    New-TestDefinition 'app-profile-catalog' 'Contract' 'tests/app-profile-catalog-contract.ps1' @() $false $false 30
+    New-TestDefinition 'profile-template' 'Contract' 'tests/profile-template-contract.ps1' @() $false $false 30
+    New-TestDefinition 'public-cases' 'Contract' 'tests/public-cases-contract.ps1' @() $false $false 30
+    New-TestDefinition 'release' 'Contract' 'tests/release-contract.ps1' @() $false $false 30
+    New-TestDefinition 'governance' 'Contract' 'tests/governance-contract.ps1' @() $false $false 30
+    New-TestDefinition 'hygiene' 'Contract' 'tests/repository-hygiene-contract.ps1' @() $false $false 30
     New-TestDefinition 'ci' 'Contract' 'tests/ci-contract.ps1' @() $false $false 30
     New-TestDefinition 'json-output' 'Contract' 'tests/json-output-contract.ps1' @() $false $false 45
     New-TestDefinition 'capability-cache' 'Contract' 'tests/capability-cache-contract.ps1' @() $false $false 45
@@ -133,7 +140,7 @@ function Get-GitMetadata {
 }
 
 function Get-NodeVersion {
-    $node = Get-Command node -ErrorAction SilentlyContinue
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $node) { return 'unavailable' }
     $version = @(& $node.Source --version 2>$null)
     if ($LASTEXITCODE -ne 0 -or -not $version.Count) { return 'unavailable' }
@@ -184,7 +191,7 @@ function Invoke-TestDefinition([object] $Definition) {
 
     Write-Host "RUN $($Definition.id) timeout=$($Definition.timeoutSeconds)s"
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = (Get-Command pwsh -ErrorAction Stop).Source
+    $startInfo.FileName = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $startInfo.WorkingDirectory = $root
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true

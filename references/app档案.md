@@ -6,6 +6,8 @@
 
 当前仓库不内置未经本机实测的 app 结论。Windows 同名 app 可能同时存在 Win32、Microsoft Store、企业封装和自动更新版本；把另一个人的观察冒充本机事实，比空档案更危险。
 
+本文件是人工经验正文，必要时会保留已脱敏的安装路径与一次实测参数；`config/app-profiles.json` 是受契约验证的机器可读目录，`references/应用能力矩阵.generated.md` 由脚本单向生成。机器目录和生成矩阵不保存绝对安装路径、账号正文、动态 PID/HWND/端口或短期元素引用；新增/升级条目遵循 `references/应用档案测试模板.md`。公开案例只从已验证事实派生，见 `references/脱敏真实案例.generated.md`；它不替代本文件和真实测试。先改事实来源与目录，再运行生成脚本，不要手改生成文档。
+
 ## 一、维护规则
 
 1. 每个 app 只保留一个当前条目；历史版本移入该条目的“已失效记录”，不要堆多个互相矛盾的结论。
@@ -394,6 +396,7 @@ L3_capture:
   - pwsh 7 的 COM 绑定拒绝 Int32 写入 Range.Value2（“cannot cast Int32 to String”）；写 [double]。
   - COM 对象不能从 PowerShell 函数 return：集合会被展开（空 Workbooks 变 $null）；`Write-Output -NoEnumerate` 又会让属性写入失败。赋值后再登记引用。
   - Range/Worksheet/Workbook 的 RCW 不释放就 Quit，/automation 进程会挂到 DCOM ping 超时（约 6 分钟）才退。全部 FinalReleaseComObject 后 30 秒内正常退出。
+  - 截图、收据和临时 xlsx 的删除必须位于最外层 finally；否则 XML 脱离宿主验证失败会跳过脚本末尾清理。2026-09-21 已编码并由静态契约守住 temp 根与命名空间边界。
   - probe 会把 Office16 目录下的 SDXHelper 算进相关进程，并扫到 Word/PowerPoint 的 protocol 与 typelib；选层以 Excel.Application 为准。
 ```
 
@@ -451,6 +454,7 @@ L3_capture:
 已知坑:
   - `Application.Hwnd` 与 “最大的窗口” 都会选错目标，按 class=XLMAIN 选。
   - 名字“Microsoft Excel”、类名 XLMAIN、ProgID Excel.Application.12 全是 WPS 的兼容伪装；任何按名字判断“是不是 Excel”的逻辑在装了 WPS 的机器上都不可信。
+  - 第二私有实例重开文件后若验证抛错，也必须关闭自己的工作簿并尝试 Quit；所有临时证据由最外层 finally 做 temp 根与命名空间校验后清理。2026-09-21 已编码并受静态契约约束。
 ```
 
 ### QQ · 9.9.21（QQ NT，Electron）· 只读窗口实测 2026-09-08

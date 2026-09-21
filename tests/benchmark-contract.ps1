@@ -7,7 +7,7 @@ $core = Join-Path $root 'scripts\benchmark-core.ps1'
 $benchmark = Join-Path $root 'scripts\benchmark.ps1'
 $uiaFixture = Join-Path $root 'scripts\benchmark-uia-fixture.ps1'
 $cdp = Join-Path $root 'scripts\cdp.js'
-$pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop).Source
+$pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 . $core
 
 function Assert-Contract([bool] $Condition, [string] $Message) {

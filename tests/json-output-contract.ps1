@@ -181,7 +181,7 @@ Assert-Contract ($LASTEXITCODE -eq 2 -and -not (($probeTypo -join "`n").Contains
 $stateTypo = @(& pwsh -NoLogo -NoProfile -File $winPath restore 'private-marker-window' --json --summmary --dry 2>&1)
 Assert-Contract ($LASTEXITCODE -eq 2 -and -not (($stateTypo -join "`n").Contains('private-marker-window'))) 'window state misspelled summary must fail before resolving target'
 
-$node = (Get-Command node -ErrorAction Stop).Source
+$node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $cdpPath = Join-Path $root 'scripts\cdp.js'
 $fixturePath = Join-Path $PSScriptRoot 'cdp-fixture.js'
 $port = 49633

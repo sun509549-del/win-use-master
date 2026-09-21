@@ -51,34 +51,24 @@ if ($Command -iin @('doctor','cache','cleanup','benchmark')) {
     exit $LASTEXITCODE
 }
 
+$riskPolicyCorePath = Join-Path $PSScriptRoot 'risk-policy-core.ps1'
+if (-not (Test-Path -LiteralPath $riskPolicyCorePath -PathType Leaf)) { Stop-Hu 'refused: 高风险动作规则解释器不可用；没有执行。' 2 }
+try { . $riskPolicyCorePath }
+catch { Stop-Hu 'refused: 高风险动作规则解释器无法加载；没有执行。' 2 }
+
 function Get-RiskPolicy {
     if ($script:RiskPolicy) { return $script:RiskPolicy }
     $path = Join-Path (Split-Path -Parent $PSScriptRoot) 'config\risk-actions.json'
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Stop-Hu "refused: 高风险动作规则不可用: $path" 2 }
-    try { $policy = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json }
-    catch { Stop-Hu "refused: 高风险动作规则无法解析: $($_.Exception.Message)" 2 }
-    if ([string]$policy.schema -ne 'win-use-master/risk-actions-v1' -or
-        -not @($policy.blockedTextPatterns).Count -or
-        @($policy.blockedKeyChords) -notcontains 'Enter' -or
-        @($policy.blockedDomSemantics) -notcontains 'form-submit') {
-        Stop-Hu 'refused: 高风险动作规则 schema 不匹配。' 2
-    }
+    try { $policy = Import-WinUseRiskPolicy $path }
+    catch { Stop-Hu 'refused: 高风险动作规则不可用或无效；没有执行。' 2 }
     $script:RiskPolicy = $policy
     return $script:RiskPolicy
 }
 
 function Find-BlockedActionRule([string] $Text) {
     $policy = Get-RiskPolicy
-    $normalized = if ($null -eq $Text) { '' } else { $Text.Normalize([Text.NormalizationForm]::FormKC) }
-    $normalized = [regex]::Replace($normalized, '([a-z0-9])([A-Z])', '$1 $2') -replace '[_-]+', ' '
-    foreach ($rule in @($policy.blockedTextPatterns)) {
-        try {
-            if ([regex]::IsMatch($normalized, [string]$rule.pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
-                return [string]$rule.id
-            }
-        } catch { Stop-Hu 'refused: 高风险动作规则包含无效表达式。' 2 }
-    }
-    return $null
+    try { return Find-WinUseBlockedTextRule $policy $Text }
+    catch { Stop-Hu 'refused: 高风险动作规则匹配失败；没有执行。' 2 }
 }
 
 function Assert-SafeSemanticAction($Element, [string] $Layer, [switch] $ActionControlsOnly) {

@@ -9,6 +9,7 @@ $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
 $fixtureParent = Join-Path $tempBase ('win-use-master-cleanup-contract-' + [Guid]::NewGuid().ToString('N'))
 $scanRoot = Join-Path $fixtureParent 'scan-root'
 $privateMarker = 'private-cleanup-marker-f51e86'
+$pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
 function Assert-Contract([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw "cleanup contract: $Message" }
@@ -16,7 +17,7 @@ function Assert-Contract([bool] $Condition, [string] $Message) {
 
 function Invoke-Win([string[]] $Arguments) {
     $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = (Get-Command pwsh -ErrorAction Stop).Source; $start.WorkingDirectory = $root
+    $start.FileName = $pwsh; $start.WorkingDirectory = $root
     $start.UseShellExecute = $false; $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
     $start.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)

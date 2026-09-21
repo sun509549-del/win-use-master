@@ -1,0 +1,71 @@
+name: Application profile proposal
+description: 提议一个可逆、可审计的 Windows 应用档案
+title: "[App profile] "
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        此表单公开。只提交应用能力摘要，不提交真实窗口内容、账号、截图、UIA/DOM 原文、路径、PID、端口或收据。涉及私有应用或敏感数据时不要创建公开档案。
+  - type: input
+    id: application
+    attributes:
+      label: 应用与版本
+      description: 产品名和公开版本号，不要包含账号、路径或设备信息。
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: 安装来源
+      options:
+        - Microsoft Store
+        - Vendor official installer
+        - Windows built-in
+        - Portable official build
+        - Other public source
+    validations:
+      required: true
+  - type: dropdown
+    id: proposed_layer
+    attributes:
+      label: 最低可行控制层
+      options:
+        - L0 CLI / COM / protocol / CDP
+        - L1 UI Automation
+        - L2 foreground coordinate input
+        - L3 read-only capture only
+        - Unknown; read-only probe needed
+    validations:
+      required: true
+  - type: textarea
+    id: probe_summary
+    attributes:
+      label: 已脱敏只读探测摘要
+      description: 只写框架、窗口类、公开版本和能力 yes/no/unknown；不要粘贴原始 probe JSON。
+    validations:
+      required: true
+  - type: textarea
+    id: reversible_task
+    attributes:
+      label: 可逆验证任务
+      description: 描述隔离对象、before/read-back/undo/cleanup；不得以发送、支付、删除或真实账号写入作为测试。
+    validations:
+      required: true
+  - type: textarea
+    id: stop_line
+    attributes:
+      label: 停手线
+      description: 哪些身份、权限、桌面、目标、遮挡或效果未知条件会立即退出 2。
+    validations:
+      required: true
+  - type: checkboxes
+    id: authorization
+    attributes:
+      label: 授权与隐私确认
+      options:
+        - label: 我有权测试该应用与数据，并能使用隔离、可逆对象。
+          required: true
+        - label: 我没有附加真实账号内容、私人证据或不可逆最终动作。
+          required: true

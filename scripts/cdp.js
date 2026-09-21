@@ -62,8 +62,9 @@ const pathUtil = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const childProcess = require('node:child_process');
+const riskPolicyCore = require('./risk-policy.js');
 const MUTATING_COMMANDS = new Set(['click', 'text', 'mouse', 'insert', 'press', 'act', 'eval-unsafe']);
-const RISK_POLICY_SCHEMA = 'win-use-master/risk-actions-v1';
+const RISK_POLICY_SCHEMA = riskPolicyCore.RISK_POLICY_SCHEMA;
 let riskPolicyCache = null;
 const HTTP_TIMEOUT_MS = 5000;
 const WS_CONNECT_TIMEOUT_MS = 5000;
@@ -154,24 +155,8 @@ class CdpRefusalError extends Error {
 function getRiskPolicy() {
   if (riskPolicyCache) return riskPolicyCache;
   const policyPath = pathUtil.join(__dirname, '..', 'config', 'risk-actions.json');
-  let raw;
-  try { raw = JSON.parse(fs.readFileSync(policyPath, 'utf8')); }
-  catch (e) { throw new CdpRefusalError(`refused: 高风险动作规则不可用或无法解析: ${policyPath}`); }
-  if (raw.schema !== RISK_POLICY_SCHEMA || !Array.isArray(raw.blockedTextPatterns) || !raw.blockedTextPatterns.length ||
-      !Array.isArray(raw.blockedKeyChords) || !raw.blockedKeyChords.includes('Enter') ||
-      !Array.isArray(raw.blockedDomSemantics) || !raw.blockedDomSemantics.includes('form-submit')) {
-    throw new CdpRefusalError('refused: 高风险动作规则 schema 不匹配');
-  }
-  try {
-    riskPolicyCache = {
-      ...raw,
-      compiledTextPatterns: raw.blockedTextPatterns.map(rule => ({
-        id: String(rule.id || 'unnamed-rule'), regex: new RegExp(String(rule.pattern), String(rule.flags || 'i')),
-      })),
-    };
-  } catch (e) {
-    throw new CdpRefusalError('refused: 高风险动作规则包含无效表达式');
-  }
+  try { riskPolicyCache = riskPolicyCore.loadRiskPolicy(policyPath); }
+  catch (e) { throw new CdpRefusalError('refused: 高风险动作规则不可用或无效'); }
   return riskPolicyCache;
 }
 
@@ -548,12 +533,8 @@ async function assertSafeActionTarget(sess, sel) {
   const semantic = await inspectActionSemantic(sess, sel);
   if (!semantic) throw new Error('元素未找到: ' + sel);
   if (semantic.actionLike) {
-    for (const rule of policy.compiledTextPatterns) {
-      rule.regex.lastIndex = 0;
-      if (rule.regex.test(String(semantic.semanticText || ''))) {
-        riskRefusal(rule.id, 'CDP 目标语义命中高风险最终动作');
-      }
-    }
+    const blockedRule = riskPolicyCore.findBlockedTextRule(policy, semantic.semanticText);
+    if (blockedRule) riskRefusal(blockedRule, 'CDP 目标语义命中高风险最终动作');
   }
   if (semantic.formSubmit && policy.blockedDomSemantics?.includes('form-submit')) {
     riskRefusal('form-submit', 'CDP 目标具有表单提交语义');

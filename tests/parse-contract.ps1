@@ -22,7 +22,7 @@ if ($parseErrors.Count) {
     throw "PowerShell parse failed with $($parseErrors.Count) error(s)."
 }
 
-$node = Get-Command node -ErrorAction SilentlyContinue
+$node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $node) {
     Write-Error 'Node.js 22+ is required to parse the optional CDP JavaScript files.'
     exit 2

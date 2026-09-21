@@ -1,6 +1,6 @@
 # win-use-master 维护交接
 
-更新日期：2026-09-14
+更新日期：2026-09-21
 公开仓库：<https://github.com/sun509549-del/win-use-master>  
 上游设计：[alchaincyf/huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use)
 
@@ -27,6 +27,9 @@
 - `capability-cache-v1` 只提供探测顺序提示。缓存管理在 helper 加载前独立分发，`show` 零写入，`record/clear` 必须显式调用；任何 UIA/CDP/L2 写路径都不得导入缓存或据其跳过实时安全检查。
 - `cleanup` 当前只能生成 dry-run 计划，生产实现不得含删除 primitive；`eligible` 不是用户授权。若未来开放 `--apply`，必须新增二次身份/路径扫描、TOCTOU 防护、逐项结果和单独授权，不能直接在现有 planner 后追加递归删除。
 - `benchmark` 只做聚合性能观察：`windows` 使用摘要读取，UIA 使用合成 provider，CDP 仅连接本次自启的临时无头 Edge。不得加入真实 app 写入、延长生产超时或跳过任何安全检查；PrintWindow 与 `insert/press` 仍待独立条件。
+- `THREAT_MODEL.md` 是安全评审真相源；贡献、安全披露、行为准则和 Issue/PR 模板已由 `governance-contract.ps1` 守护。仓库未开启私密漏洞报告时，公开联络 Issue 只允许类别和确认项，绝不能接收技术详情。
+- `SUPPLY_CHAIN.md` 是运行时、外部 Action 和许可证清单；`repository-hygiene-contract.ps1` 扫描高置信凭据、误入库证据/二进制、包 manifest、Action 白名单和 CI 包安装命令，但不替代历史与上游人工审查。
+- 最终动作文本规则仍只有 `config/risk-actions.json` 一个真相源；UIA/L2 通过 `risk-policy-core.ps1`，CDP 通过 `risk-policy.js` 解释同一规范化约定。任何规则变更都必须同时增加命中与不命中样例，并通过跨运行时契约。
 - `uiaread` 的限定查询只在元数据过滤后读取当前页正文；continuation 绑定 HWND、PID/启动时间、查询、子树根和匹配树指纹，任何身份或树变化都必须退出 2 并从第一页重查。
 - 机器输出成功时 stdout 只能有一个 JSON 文档；unknown 用枚举和 `null`，不能压成 false/0/空串。窗口/UIA 敏感页使用 `--json --summary`，并记住 UIA summary 只改变呈现、不改变采集。
 - 收据 schema 已统一为 `win-use-master/receipt-v1`、`win-use-master/uia-map-v1`、`win-use-master/action-receipt-v1`。
@@ -34,7 +37,8 @@
 - CDP `eval`/`eval-read` 已改为浏览器副作用检查；受控状态读取优先用脱敏 `inspect`。任意脚本写入只能显式使用 `eval-unsafe --allow-side-effects`，并生成不含原始表达式、`effect` 始终为 `unknown` 的动作回执。
 - `open --cdp` 校验通过后签发 30 分钟 `cdp-session-v1`，绑定端口、owner PID/路径/启动时间和 page target id；底层 `cdp.js` 的每个写命令独立复核，`--dry` 不签发。
 - `config/risk-actions.json` 是 UIA/CDP/L2 共用的 `risk-actions-v1`：UIA invoke 与 UIA-map 坐标点击检查控件语义，CDP click/mouse 检查文本/ARIA/id/name/表单提交，Enter/保存/关闭快捷键 fail-closed。规则命中在输入前退出 2，`--force` 不绕过。
-- 可重放档案有六个：计算器 11.x（UWP 宿主 + InvokePattern）、记事本 11.x（Document ValuePattern 可逆写）、WorkBuddy AI 5.4.2（CDP 零焦点 insert/撤回；需用户先以 `--cdp` 启动授权实例）、Excel 16.x（L0 COM 私有实例写表→另存→不经 Excel 验证）、WPS 表格 12.x（KET.Application 同任务 + 第二实例重开读回），以及 Windows 11 设置（AUMID 启动、ApplicationFrameHost 宿主、零写入 UIA/L3 只读回归）。另有 QQ 9.9、微信 4.1、剪映 10.4 三个只读观察档案。`app档案.md` 已形成 9 条跨 app 共性结论（9 个 app）；证据图、快照与可能含账号/设备名的 UIA map 不入库。Blender 未安装。
+- Excel/WPS 真实档案的证据目录必须由最外层 `finally` 清理，并同时核对 temp 根和 `win-use-master-<app>-` 叶名；WPS 第二个私有实例在重开验证失败时也要先关闭自己的工作簿并尝试 Quit。静态契约守住这两个失败路径，禁止退回“仅成功末尾清理”。
+- 可重放档案有六个：计算器 11.x（UWP 宿主 + InvokePattern）、记事本 11.x（Document ValuePattern 可逆写）、WorkBuddy AI 5.4.2（CDP 零焦点 insert/撤回；需用户先以 `--cdp` 启动授权实例）、Excel 16.x（L0 COM 私有实例写表→另存→不经 Excel 验证）、WPS 表格 12.x（KET.Application 同任务 + 第二实例重开读回），以及 Windows 11 设置（AUMID 启动、ApplicationFrameHost 宿主、零写入 UIA/L3 只读回归）。另有 QQ 9.9、微信 4.1、剪映 10.4 三个只读观察档案。`config/app-profiles.json` 将 9 个样本和 1 个未安装占位编码为 6/3/1 分类，`应用能力矩阵.generated.md` 只由脚本生成；Blender 不计入样本。证据图、快照与可能含账号/设备名的 UIA map 不入库。
 
 ## 3. 代码地图
 
@@ -43,6 +47,10 @@
 | `SKILL.md` | agent 必须遵守的主流程、安全闸、停手线和文档路由 |
 | `PROJECT_STATUS.md` | 当前已完成工作、功能/应用/测试矩阵、缺口、优先级与 v1.0 验收标准 |
 | `IMPLEMENTATION_PLAN.md` | 从当前 Beta 候选到 v1.0 的阶段、任务、依赖、质量门、风险与建议工期 |
+| `THREAT_MODEL.md` | 资产、信任边界、9 类威胁、现有控制、测试映射与残余风险 |
+| `CONTRIBUTING.md` / `SECURITY.md` | 安全不变量、测试要求、支持范围与私密披露流程 |
+| `SUPPLY_CHAIN.md` | PowerShell/Node/Windows 运行时、固定 Action、零包依赖事实、许可证与升级规则 |
+| `.github/ISSUE_TEMPLATE/` / `pull_request_template.md` | 脱敏 Bug/app 档案输入、无自由文本的私密联络请求和 PR 风险清单 |
 | `scripts/win.ps1` | 用户入口；窗口解析、截图、UIA worker 调度、坐标动作、安全闸和收据 |
 | `scripts/doctor.ps1` | 只读采集运行时、helper、CDP、schema、桌面、临时区和测试可运行性；输出 `doctor-report-v1` |
 | `scripts/doctor-core.ps1` | 不接触系统状态的 doctor 判定与格式化核心，供生产和 fixture 共同调用 |
@@ -55,11 +63,17 @@
 | `scripts/benchmark.ps1` / `benchmark-core.ps1` | windows/UIA/CDP 只读基线编排、聚合统计与临时无头 fixture 回收 |
 | `scripts/benchmark-uia-fixture.ps1` | 对实际 `Get-UiaReadablePage` 运行 100/300/1000 元素合成 provider |
 | `references/性能基线.md` | 测量口径、首版本机结果、隐私/副作用边界、20% p95 人工预警与延期项 |
+| `references/安装升级与卸载.md` | skills CLI/Git clone 生命周期、缓存/session/evidence 数据清单和精确清理边界 |
 | `scripts/HuWin.cs` | Win32/DWM/SendInput/DPI/截图看门狗/输入尾迹/HUD 底层 |
 | `scripts/uia-worker.ps1` | 隔离的 UIA list/read/resolve/set/invoke worker，正文经 stdin 传递 |
 | `scripts/probe.ps1` | 只读应用发现：Win32/AppX、版本、架构、runtime、端口、协议、COM、窗口、UIA、完整性 |
 | `scripts/cdp.js` | CDP target、DOM ref、动作、截图、差分、脱敏收据和截止时间 |
 | `config/risk-actions.json` | 跨 UIA/CDP/L2 的版本化最终动作文本、按键与 DOM 语义拒绝规则 |
+| `scripts/risk-policy-core.ps1` / `risk-policy.js` | PowerShell 与 Node 的失败关闭规则解释器；规范化阶段由 JSON 声明并由同一语料核对 |
+| `config/app-profiles.json` | 机器可读应用档案真相源：版本、身份、四层能力、任务、停手线、测试和复验条件 |
+| `scripts/generate-app-matrix.ps1` / `references/应用能力矩阵.generated.md` | 确定性生成/校验能力矩阵；不覆盖人工 `app档案.md` |
+| `tests/profile-test-template.ps1` / `references/应用档案测试模板.md` | 目录绑定、默认拒绝且零副作用的十阶段计划；真实应用命令仍由各档案单独实现 |
+| `config/public-cases.json` / `scripts/generate-public-cases.ps1` / `references/脱敏真实案例.generated.md` | UIA/CDP/COM 三类公开派生案例；当前只有文字素材，视觉状态明确为未包含 |
 | `assets/architecture.svg` | README 使用的仓库原生架构图；无脚本、无远程资源，含 title/desc |
 | `tests/settings-profile.ps1` | Windows 11 设置隔离只读档案；拒绝复用现有实例，零写入并清理敏感临时证据 |
 | `references/控制面详解.md` | 四层原理和选择依据 |
@@ -139,8 +153,18 @@
 - `-TestId` 可精确复跑当前层的一个或多个测试；`-List`/`-DryRun` 不启动应用。调度器对子测试设置总截止时间，输出 UTF-8，并保留 0/1/2 语义。
 - 可选报告 schema 为 `win-use-master/test-report-v1`：记录版本、结果、耗时、输出行数和哈希，不保存原始测试日志或工作区绝对路径；已有报告默认拒绝覆盖。
 - `test-runner-contract.ps1` 验证分层选择、profile 显式授权、dry-run、实际 parse 执行、报告隐私和覆盖保护；CI 增加该契约与 `uia-timeout.ps1`。
-- 本地完整 Contract 层已通过 14/14，包含新增 benchmark 契约。该层仍不能替代 Desktop/Coordinate 回归；每个待发布提交还必须核对远程 CI 的目标 SHA。
-- CI 已拆成单次核心契约和 Node 22/24 CDP 矩阵；`checkout`/`setup-node` 固定到已审查的完整 commit，禁用不需要的包缓存，并由 `ci-contract.ps1` 守住只读权限、矩阵和 action 身份。上一公开基线两个 Node job 均已通过；本地未推送的 doctor 增量仍须在推送后重验目标 SHA。
+- 本地完整 Contract 层已通过 21/21，包含 release、risk policy、app profile catalog、profile template、public cases、benchmark、governance 与 repository hygiene 契约。该层仍不能替代 Desktop/Coordinate 回归；每个待发布提交还必须核对远程 CI 的目标 SHA。
+- CI 已拆成单次核心契约和 Node 22/24 CDP 矩阵；`checkout`/`setup-node` 固定到已审查的完整 commit，禁用不需要的包缓存，并由 `ci-contract.ps1` 守住只读权限、矩阵和 action 身份。公开提交 `bb423a4` 的三个 job 均已通过；本地治理增量须在推送后重验目标 SHA。
+- 本机可能同时解析出 Codex runtime 与 WindowsApps 两个 `pwsh.exe`。所有子进程入口必须使用 `Get-Command ... -CommandType Application | Select-Object -First 1`；静态契约会拒绝未显式选首项的 `pwsh`/`node` 解析，避免把多个路径拼成一个 FileName。
+
+### 2026-09-21 安全与开源治理
+
+- `THREAT_MODEL.md` 覆盖提示注入、CDP 身份、桌面/UIPI、坐标漂移、写后 unknown、证据泄露、清理越界、供应链与恶意贡献，并逐项列出残余风险和测试。
+- `SECURITY.md` 不虚构邮箱或 SLA：优先使用 GitHub 私密漏洞报告；入口未启用时只创建不含细节的公开联络请求，等待私密渠道。
+- Bug 与 app-profile Issue Forms 强制确认脱敏、授权和可逆任务；security-contact 表单刻意没有 input/textarea，空白 Issue 已关闭。
+- PR 模板要求控制层、安全影响、测试/skip、隐私、兼容、owner 与清理说明；`governance-contract.ps1` 与 CI 同时守护这些文件。
+- `SUPPLY_CHAIN.md` 与 `repository-hygiene-contract.ps1` 记录并守住当前零包管理依赖、两项固定 SHA 的 GitHub Action、MIT 许可证和禁止误入库的证据/二进制；扫描结果只报文件与规则，不输出疑似秘密内容。
+- README 已增加零目标写入的五分钟体验与 English Quick Start；生命周期文档使用第三方 skills CLI 的精确 update/remove 命令，并明确缓存、session、helper、版本检查和用户 evidence 不会随卸载自动消失。没有增加 `agents/openai.yaml`：当前没有独立 UI 展示元数据需求，避免复制 `SKILL.md`。
 
 ### 2026-09-14 只读 doctor 增量
 
@@ -246,28 +270,29 @@ pwsh -NoProfile -File tests/wps-et-com-profile.ps1
 
 前三者发现目标原本已打开时会拒绝运行；不要关闭用户已有实例。计算器测试执行 `1+2=3`、恢复 0 并关闭。记事本测试还会拒绝向恢复出的会话写入（多标签、已修改或非空文档），写入后清空再关闭；记事本 11 关闭已修改标签不弹提示而是留到下次会话，因此失败路径同样先清空。设置测试不调用控件、不写搜索框，要求 `see/uia/uiaread --summary` 不输出语义明细，只做过滤后的语义读回和 PrintWindow 收据核对，随后删除含账号/设备语义的临时 map。WorkBuddy 测试相反：它从不启动、重启或关闭 app，只接受用户已授权并带 `--cdp` 启动的实例；无实例、端口归属不明或输入区有草稿时退出 2。它不按 Enter、不点发送、不碰「重启升级」。
 
-云 CI 的核心 job 运行解析、构建、发布/CI 静态契约、测试调度器、UIA 读取/超时和窗口状态；CDP job 在 Node 22/24 矩阵中分别运行 owner 与无头 Edge 收据/超时测试。静态契约守住必需发布文件、风险规则正反例、架构 SVG、README 相对链接、兼容入口和 `SKILL.md ≤ 6000` 字符。GitHub runner 没有可信的用户交互桌面，因此不得把 L2、截图/UIA fixture 或计算器测试塞进 CI 后宣称通过。
+云 CI 的核心 job 运行解析、构建、发布/CI 静态契约、跨运行时风险规则、测试调度器、UIA 读取/超时和窗口状态；CDP job 在 Node 22/24 矩阵中分别运行 owner 与无头 Edge 收据/超时测试。静态契约守住必需发布文件、架构 SVG、README 相对链接、兼容入口和 `SKILL.md ≤ 6000` 字符；风险专项守住正反例、规则 ID、规范化与失败关闭。GitHub runner 没有可信的用户交互桌面，因此不得把 L2、截图/UIA fixture 或计算器测试塞进 CI 后宣称通过。
 
 ## 7. 发布流程
 
 1. 确认 `git status --short` 只含本轮预期文件。
 2. 扫描真实密钥、本机绝对路径、账号和测试残留。
 3. 运行上面的本地测试；`static-contract.ps1` 必须通过，生成的 DLL 和 `.last-update-check` 应保持 ignored。
-4. 使用描述性提交信息推送 `main`。
-5. 等待 `.github/workflows/ci.yml` 完成；远端 SHA 必须与本地一致。
-6. 更新 `references/与mac版差距.md`：已编码消除的缺口移入“已经对齐”。
+4. 核对 `config/release.json`、`VERSION`、`CHANGELOG.md` 与 `RELEASE_NOTES.md`；运行 `scripts/release-check.ps1 -Json -Summary`。退出 2 代表发布门尚未闭合，不能发布。
+5. 只有用户明确要求时，才使用描述性提交信息推送 `main`；文档完善或本地通过不是推送、tag 或 Release 授权。
+6. 等待 `.github/workflows/ci.yml` 完成；远端 SHA 必须与本地一致。
+7. 更新 `references/与mac版差距.md`：已编码消除的缺口移入“已经对齐”。
+8. 全部门通过且仓库所有者明确授权后，才按 `references/版本与发布.md` 创建 tag、校验和与 Release；故障恢复按 `references/回滚与恢复.md`，不覆盖用户工作区。
 
 不要提交临时证据、用户窗口截图、测试 profile、`HuWin.dll` 或任何凭据。
 
 ## 8. 当前待办
 
-1. M2-06 第二阶段：专用空闲桌面测 PrintWindow；CDP `insert/press` 另建一次性授权、隔离且可撤回的写基线。
-2. M2-05 后续评审：`--apply` 仍未授权且未实现；先设计二次扫描/TOCTOU/部分失败契约，再单独决定是否开放。
-3. P1：剪映 CEF 是否接受 `--remote-debugging-port`、「版本更新」弹窗可见态截图；都需要用户授权重启或显示，不得自行 ShowWindow。
-4. P1：QQ 聊天输入框的 UIA/CDP 写路径未测（停手线附近，需用户指定一个可逆目标）。
-5. P1：制作经脱敏的真实 Windows 案例；架构图已完成并由静态契约守护。
-6. P2：微信是 Qt5 空树 + 无 CDP 的典型，L2 写路径（需用户指定可逆目标）能补上“只有坐标可走”的第一个真实样本。
-7. P2：Blender 安装后按 Mac 的 bpy 路线补 L0 CLI 创作型案例。
+1. M0：在专用空闲桌面完成 Desktop、Coordinate、capture recovery 和 Settings 发布门；不得用云 CI 代替。
+2. M4：由仓库所有者开启 GitHub 私密漏洞报告；定期人工复核固定 Action、runner 镜像、历史提交和许可证变化。
+3. M2-06 第二阶段：专用空闲桌面测 PrintWindow；CDP `insert/press` 另建一次性授权、隔离且可撤回的写基线。
+4. M2-05 后续评审：`--apply` 仍未授权且未实现；先设计二次扫描/TOCTOU/部分失败契约，再单独决定是否开放。
+5. M3-02：剪映 CEF、QQ 可逆写、微信安全停手和 Blender L0 档案均需对应用户授权或安装条件；M3-01 机器目录/矩阵与 M3-03 测试模板首版已完成。
+6. P1：三类脱敏文字案例、版本策略、Changelog、Release Notes 草案、回滚说明、英文快速开始和安装生命周期指南已完成；仍需真实截图/GIF 的人工脱敏复核，以及全部发布门通过后的 tag/校验和/Release 实证。
 
 ## 9. 常见误判
 

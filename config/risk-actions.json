@@ -1,14 +1,51 @@
 {
   "schema": "win-use-master/risk-actions-v1",
+  "normalization": [
+    "unicode-nfkc",
+    "camel-case-boundary",
+    "separator-to-space",
+    "collapse-whitespace",
+    "trim"
+  ],
   "blockedTextPatterns": [
     {
-      "id": "zh-final-action",
-      "pattern": "删除|清空|发布|提交|发送|支付|付款|购买|下单|卸载|安装|授权|同意|保存|覆盖|转账|汇款|确认支付|永久删除",
+      "id": "zh-communication",
+      "pattern": "发送|发布|提交|回复|评论|发帖|分享|邀请|上传|群发",
       "flags": "i"
     },
     {
-      "id": "en-final-action",
-      "pattern": "\\b(delete|remove|publish|submit|send|post|pay|buy|purchase|uninstall|install|authorize|agree|save|overwrite|transfer)\\b",
+      "id": "zh-financial",
+      "pattern": "支付|付款|购买|下单|结账|转账|汇款|充值|提现|退款|捐赠|打赏|确认(?:订单|支付|购买|转账)",
+      "flags": "i"
+    },
+    {
+      "id": "zh-destructive",
+      "pattern": "删除|清空|永久移除|彻底移除|注销(?:账号|账户)|卸载|清空回收站|销毁",
+      "flags": "i"
+    },
+    {
+      "id": "zh-consent-save-close",
+      "pattern": "安装|授权|同意|批准|允许访问|授予权限|保存|另存为|覆盖|关闭|退出",
+      "flags": "i"
+    },
+    {
+      "id": "en-communication",
+      "pattern": "\\b(send|publish|submit|post|reply|comment|share|invite|upload|email|message)\\b",
+      "flags": "i"
+    },
+    {
+      "id": "en-financial",
+      "pattern": "\\b(pay|buy|purchase|transfer|withdraw|deposit|refund|donate|tip|checkout)\\b|\\b(place|confirm)\\s+(order|payment|purchase|transfer)\\b",
+      "flags": "i"
+    },
+    {
+      "id": "en-destructive",
+      "pattern": "\\b(delete|remove|erase|destroy|uninstall)\\b|\\b(clear\\s+all|empty\\s+trash|close\\s+account|delete\\s+account)\\b",
+      "flags": "i"
+    },
+    {
+      "id": "en-consent-save-close",
+      "pattern": "\\b(install|authorize|approve|consent|agree|save|overwrite|close|exit)\\b|\\b(grant|allow)\\s+(access|permission)\\b",
       "flags": "i"
     }
   ],

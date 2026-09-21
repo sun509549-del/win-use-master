@@ -13,7 +13,7 @@
 
 本项目是 [huashu-mac-use](https://github.com/alchaincyf/huashu-mac-use) 设计理念的 Windows 平台实现；保留上游 MIT 许可证与原作者署名，并针对 UI Automation、UIPI、DWM、`SendInput` 和 Windows 虚拟桌面重新设计实现。
 
-[快速开始](#快速开始) · [四层控制面](#四层控制面) · [安全模型](#安全模型) · [命令表](#命令表) · [能力边界](#能力边界) · [English](#english)
+[快速开始](#快速开始) · [四层控制面](#四层控制面) · [安全模型](#安全模型) · [命令表](#命令表) · [能力边界](#能力边界) · [版本与发布](references/版本与发布.md) · [English](#english-quick-start)
 
 </div>
 
@@ -75,6 +75,22 @@ pwsh -NoProfile -File "$SKILL_DIR\scripts\build.ps1"
 
 `doctor` 检查 PowerShell、helper、Node/Chromium、风险与收据 schema、交互桌面、完整性、临时区候选残留和各测试层可运行性。输出不含绝对路径、窗口标题或正文；为保持零写入，临时目录的写权限只会标为 `unknown/not-probed`，不会创建探测文件。Node/Chromium 是可选 CDP 依赖，缺失不会让 UIA/截图核心能力整体失败。退出码 `0` 表示必需核心检查通过，`1` 表示必需依赖缺失或失效，`2` 表示参数被安全拒绝或必需状态无法判断。
 
+### 五分钟只读体验
+
+下面只观察环境和应用能力，不启动/关闭目标 app，不发送输入，也不读取控件正文。`probe --no-cache` 禁止读取建议缓存；只有 doctor 报告 helper 为 `ready` 时才运行 `windows`，避免首次体验触发现场编译。
+
+```powershell
+$SKILL_DIR = 'C:\path\to\win-use-master'
+
+& "$SKILL_DIR\scripts\win.ps1" doctor --summary
+pwsh -NoProfile -File "$SKILL_DIR\scripts\probe.ps1" 'notepad.exe' --json --summary --no-cache
+
+# doctor 显示 helper ready 后再运行；只返回窗口状态计数，不展开标题
+& "$SKILL_DIR\scripts\win.ps1" windows --json --summary
+```
+
+这不是写入授权，也不证明所有 app 都可控制。若任何命令退出 2，停止并按“安全拒绝/未知”处理；不要自动重试或改用坐标输入。完整升级、卸载和本地数据清单见[安装、升级、卸载与本地数据清理](references/安装升级与卸载.md)。
+
 自动化脚本可对主要读取与窗口状态结果使用版本化 JSON：
 
 ```powershell
@@ -108,7 +124,7 @@ pwsh -NoProfile -File "$SKILL_DIR\scripts\probe.ps1" "notepad.exe" --json > .\pr
 
 Skill 每 30 天至多静默检查一次 git `origin` 是否有新版本；检查失败不影响当前任务，也不会自动 pull。发现落后只在任务结束后提示，由用户决定是否更新。非 git 安装只刷新本地检查日期。
 
-公开仓库的 Windows CI 会在干净 runner 上执行发布契约检查、PowerShell/JavaScript 解析、C# helper 构建、只读性能契约、CDP 端口归属防串线，以及无头 Edge 动作收据、脱敏与超时回归。发布契约会守住必需文件、风险规则正反例、README 相对链接、SVG 安全性、兼容入口和 SKILL 体积。需要活动交互桌面的 `smoke.ps1`、截图 sibling 和真实计算器测试只在本机运行，云 CI 不伪造这些结论。
+公开仓库的 Windows CI 会在干净 runner 上执行发布契约检查、PowerShell/JavaScript 解析、C# helper 构建、跨运行时风险规则、只读性能契约、CDP 端口归属防串线，以及无头 Edge 动作收据、脱敏与超时回归。发布契约会守住必需文件、README 相对链接、SVG 安全性、兼容入口和 SKILL 体积；风险专项用同一组正反例核对 UIA/L2 PowerShell 与 CDP Node 解释器。需要活动交互桌面的 `smoke.ps1`、截图 sibling 和真实计算器测试只在本机运行，云 CI 不伪造这些结论。
 
 ### 第一次探测
 
@@ -245,7 +261,7 @@ Windows `SendInput` 是全局输入流，不携带目标 PID/HWND。工具会短
 
 HUD 默认使用四角 `corner` 样式并尽力排除捕获。可用 `WIN_USE_MASTER_HUD_STYLE=corner|glow|plain` 选择四角、整屏边框或仅标签；`WIN_USE_MASTER_HUD=0` 完全关闭。只有录制 HUD 本身的演示时才设置 `WIN_USE_MASTER_HUD_CAPTURABLE=1`，否则保持默认排除捕获。手动预览也可执行 `win.ps1 hud 1400 "文案" glow`。
 
-`config/risk-actions.json` 是 UIA、CDP 和按键路径共用的版本化规则源。`Enter`、`Ctrl+S`、`Ctrl+Shift+S`、`Alt+F4` 都作为可能提交、保存或关闭的最终动作拒绝；`--force` 仅为旧调用保留解析兼容，不会解除这些规则，也不绕过用户在场、遮挡、完整性未知/UIPI、锁屏或 UAC。最终一步由用户亲自完成。
+`config/risk-actions.json` 是 UIA、CDP 和按键路径共用的版本化规则源。文本先统一做 Unicode NFKC、camelCase 拆分、下划线/连字符换空格、空白折叠与 trim，再匹配中英文通信、金融、破坏、授权/保存/关闭规则；PowerShell 与 Node 使用独立语言实现但由同一跨运行时语料守住一致性。`Enter`、`Ctrl+S`、`Ctrl+Shift+S`、`Alt+F4` 都作为可能提交、保存或关闭的最终动作拒绝；`--force` 仅为旧调用保留解析兼容，不会解除这些规则，也不绕过用户在场、遮挡、完整性未知/UIPI、锁屏或 UAC。最终一步由用户亲自完成。
 
 ## 命令表
 
@@ -336,7 +352,11 @@ node "$SKILL_DIR/scripts/cdp.js" <port> eval-unsafe <target> <表达式> --allow
 - 不自动提权、不关闭 UAC/Defender/SmartScreen、不注入进程、不强杀 app。
 - CDP 调试端口暴露的是强能力；只绑定本机、只针对用户授权的 app，用完关闭实例。
 
-项目完成度、已实现功能、测试证据和 v1.0 路线见 [`PROJECT_STATUS.md`](PROJECT_STATUS.md)，未来实施阶段、任务拆分、工期和验收门见 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)，维护交接见 [`HANDOFF.md`](HANDOFF.md)。详细原理见 [`references/控制面详解.md`](references/控制面详解.md)，故障与权限见 [`references/权限与故障.md`](references/权限与故障.md)，证据落盘见 [`references/取证规范.md`](references/取证规范.md)，能力缓存见 [`references/能力缓存.md`](references/能力缓存.md)，临时治理见 [`references/临时数据治理.md`](references/临时数据治理.md)，性能口径见 [`references/性能基线.md`](references/性能基线.md)，单 app 易腐经验与跨 app 共性结论见 [`references/app档案.md`](references/app档案.md)，翻车过程与工具为何如此见 [`references/踩坑实录.md`](references/踩坑实录.md)，与原 Mac 版的差距和优先级见 [`references/与mac版差距.md`](references/与mac版差距.md)。
+## 贡献与安全
+
+项目威胁边界、残余风险和测试映射见 [`THREAT_MODEL.md`](THREAT_MODEL.md)，运行时/Action/许可证与零包依赖清单见 [`SUPPLY_CHAIN.md`](SUPPLY_CHAIN.md)。参与开发前请阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)；安全漏洞与敏感证据按 [`SECURITY.md`](SECURITY.md) 私密报告，不要粘贴到公开 Issue；社区互动遵循 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)。
+
+项目完成度、已实现功能、测试证据和 v1.0 路线见 [`PROJECT_STATUS.md`](PROJECT_STATUS.md)，未来实施阶段、任务拆分、工期和验收门见 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)，维护交接见 [`HANDOFF.md`](HANDOFF.md)。当前版本候选、Changelog、Release Notes 与安全回滚分别见 [`VERSION`](VERSION)、[`CHANGELOG.md`](CHANGELOG.md)、[`RELEASE_NOTES.md`](RELEASE_NOTES.md)、[`references/版本与发布.md`](references/版本与发布.md) 和 [`references/回滚与恢复.md`](references/回滚与恢复.md)。详细原理见 [`references/控制面详解.md`](references/控制面详解.md)，故障与权限见 [`references/权限与故障.md`](references/权限与故障.md)，证据落盘见 [`references/取证规范.md`](references/取证规范.md)，能力缓存见 [`references/能力缓存.md`](references/能力缓存.md)，临时治理见 [`references/临时数据治理.md`](references/临时数据治理.md)，性能口径见 [`references/性能基线.md`](references/性能基线.md)，单 app 易腐经验与跨 app 共性结论见 [`references/app档案.md`](references/app档案.md)，其机器可读汇总见 [`references/应用能力矩阵.generated.md`](references/应用能力矩阵.generated.md)，新增档案按 [`references/应用档案测试模板.md`](references/应用档案测试模板.md) 建立，UIA/CDP/COM 的公开派生案例见 [`references/脱敏真实案例.generated.md`](references/脱敏真实案例.generated.md)，翻车过程与工具为何如此见 [`references/踩坑实录.md`](references/踩坑实录.md)，与原 Mac 版的差距和优先级见 [`references/与mac版差距.md`](references/与mac版差距.md)。
 
 ## 仓库结构
 
@@ -347,11 +367,23 @@ win-use-master/
 ├── PROJECT_STATUS.md     # 当前完成度、功能矩阵、验证证据与分阶段路线
 ├── IMPLEMENTATION_PLAN.md # 未来任务拆分、依赖、工期、质量门和发布节奏
 ├── HANDOFF.md            # 维护交接、测试矩阵、发布流程与当前待办
+├── THREAT_MODEL.md       # 资产、信任边界、威胁、控制、测试与残余风险
+├── CONTRIBUTING.md       # 安全不变量、开发测试和 PR 要求
+├── SECURITY.md           # 支持范围、私密披露流程和禁止公开的证据
+├── CODE_OF_CONDUCT.md    # 社区行为与执行原则
+├── SUPPLY_CHAIN.md       # 运行时、CI Action、许可证和依赖升级规则
+├── VERSION               # release manifest 的单行版本投影；当前为未发布候选
+├── CHANGELOG.md          # 未发布与已发布变化记录
+├── RELEASE_NOTES.md      # 当前候选说明、阻塞项、限制与升级/回滚入口
+├── .github/              # CI、Issue Forms 与 Pull Request 模板
 ├── cdp.js                # 兼容旧入口，转发到 scripts/cdp.js
 ├── assets/
 │   └── architecture.svg  # 分层控制、安全边界与证据闭环架构图
 ├── config/
-│   └── risk-actions.json # UIA/CDP/L2 共用的最终动作拒绝规则
+│   ├── risk-actions.json # UIA/CDP/L2 共用的最终动作拒绝规则
+│   ├── app-profiles.json # 版本化应用档案目录；只含脱敏派生事实
+│   ├── public-cases.json # UIA/CDP/COM 公开案例的派生事实和视觉审查状态
+│   └── release.json      # 版本、发布状态、兼容阶段和强制发布门真相源
 ├── scripts/
 │   ├── HuWin.cs          # Win32 / DWM / SendInput / 截图 / 安全判据
 │   ├── HuWin.dll         # build.ps1 生成，可删除后重编译
@@ -366,6 +398,11 @@ win-use-master/
 │   ├── benchmark.ps1     # 聚合 windows/UIA/CDP 只读性能基线
 │   ├── benchmark-core.ps1 # p50/p95 等纯统计核心
 │   ├── benchmark-uia-fixture.ps1 # 无桌面合成 provider 基线
+│   ├── risk-policy-core.ps1 # UIA/L2 共用的规则校验、规范化与匹配
+│   ├── risk-policy.js     # CDP 共用的同契约 Node 解释器
+│   ├── generate-app-matrix.ps1 # 从目录确定性生成能力矩阵；不改人工正文
+│   ├── generate-public-cases.ps1 # 从脱敏事实确定性生成公开案例
+│   ├── release-check.ps1 # 零写入发布就绪汇总；阻塞时退出 2
 │   ├── uia-worker.ps1    # 有截止时间的隔离 UIA 枚举/读取/动作
 │   ├── probe.ps1         # 只读能力探测
 │   └── cdp.js            # 内嵌 Chromium 的 CDP 工具
@@ -379,6 +416,12 @@ win-use-master/
 │   ├── capability-cache-contract.ps1 # 缓存白名单、失效和非授权边界
 │   ├── cleanup-contract.ps1 # 临时对象 dry-run、owner/路径与零写入契约
 │   ├── benchmark-contract.ps1 # 聚合 schema、隐私、零写入模式和超时不变量
+│   ├── risk-policy-contract.ps1 # PowerShell/Node 规范化、正反例与失败关闭
+│   ├── app-profile-catalog-contract.ps1 # 档案 schema、分类、隐私、测试映射与生成漂移
+│   ├── profile-test-template.ps1 # 默认拒绝、零副作用的真实档案十阶段计划模板
+│   ├── profile-template-contract.ps1 # 模板目录绑定、安全不变量、隐私与零写入契约
+│   ├── public-cases-contract.ps1 # 三类案例来源一致性、脱敏与视觉素材边界
+│   ├── release-contract.ps1 # SemVer、Changelog、Release Notes、回滚与零副作用检查
 │   ├── ci-contract.ps1   # CI 只读权限、action 固定版本和 Node 矩阵契约
 │   ├── run-tests.ps1      # Contract/Desktop/Coordinate/Profiles 分层调度与 JSON 摘要
 │   ├── test-runner-contract.ps1 # 调度、显式 profile、报告隐私和覆盖保护契约
@@ -403,8 +446,14 @@ win-use-master/
     ├── 机器可读输出.md
     ├── 能力缓存.md
     ├── 临时数据治理.md
+    ├── 安装升级与卸载.md
     ├── 性能基线.md
     ├── app档案.md
+    ├── 应用能力矩阵.generated.md # 从 app-profiles.json 自动生成，请勿手改
+    ├── 应用档案测试模板.md # 新档案十阶段实现、验证、清理与接入要求
+    ├── 脱敏真实案例.generated.md # UIA/CDP/COM 派生案例；不含原始证据
+    ├── 版本与发布.md     # SemVer、兼容承诺、发布门与候选流程
+    ├── 回滚与恢复.md     # 并行目录回滚、状态兼容与发布故障处理
     ├── 踩坑实录.md       # 为什么闸/提示/断言长这样：Windows 自己踩过的坑与推翻的结论
     └── 与mac版差距.md
 ```
@@ -418,7 +467,7 @@ win-use-master/
 ```powershell
 # 查看全部测试，不执行
 pwsh -NoProfile -File "$SKILL_DIR\tests\run-tests.ps1" -List
-# 无桌面层：14 项解析、构建、doctor、JSON、缓存、cleanup、benchmark、静态、CI、UIA、窗口状态和 CDP 契约
+# 无桌面层：21 项解析、构建、doctor、JSON、缓存、cleanup、benchmark、风险规则、应用档案目录/模板/公开案例、发布、治理、仓库卫生、静态、CI、UIA、窗口状态和 CDP 契约
 pwsh -NoProfile -File "$SKILL_DIR\tests\run-tests.ps1" -Tier Contract
 # 只复跑指定项；多个 ID 使用逗号连接
 pwsh -NoProfile -File "$SKILL_DIR\tests\run-tests.ps1" -Tier Contract -TestId parse,static
@@ -463,10 +512,23 @@ pwsh -NoProfile -File "$SKILL_DIR\tests\wps-et-com-profile.ps1"
 
 MIT © Huashu（花叔）。见 [LICENSE](LICENSE)。
 
-## English
+## English Quick Start
 
 **win-use-master** is an Agent Skill for driving Windows desktop apps that have no suitable API while preserving reproducible evidence. It probes four control planes in order: app-native interfaces and local CDP, Microsoft UI Automation, foreground window-relative `SendInput`, and pixel capture.
 
 Reads are designed to stay in the background where Windows permits it. Structural and semantic writes are preferred. Coordinate input is explicitly foreground-only: Windows has no reliable general-purpose per-process equivalent of background keyboard/mouse injection, so every such action is gated by lock-screen/desktop state, a machine-wide focus lock, recent user activity, UIPI integrity, foreground verification, and occlusion checks.
 
 `PrintWindow` and UIA are treated as best-effort interfaces, not guarantees. A successful call is never sufficient evidence; verify read-back, app state indicators, or the final side effect.
+
+Requirements: Windows 10/11 with an interactive desktop and PowerShell 7. Node.js 22+ is optional and only needed for CDP. Install with the third-party skills CLI, then point `$SKILL_DIR` at the installed directory selected by that CLI:
+
+```powershell
+npx skills add sun509549-del/win-use-master -g
+& "$SKILL_DIR\scripts\win.ps1" doctor --summary
+pwsh -NoProfile -File "$SKILL_DIR\scripts\probe.ps1" 'notepad.exe' --json --summary --no-cache
+& "$SKILL_DIR\scripts\win.ps1" windows --json --summary
+```
+
+Run `windows` only when doctor reports the helper as ready; otherwise build it explicitly after reviewing the source. Exit code `0` means verified success, `1` definite failure, and `2` safe refusal or unknown effect. Never treat `2` as success or automatically retry a non-idempotent action.
+
+This project is Beta: it does not promise support for every Windows app, protected/admin surfaces, locked or disconnected desktops, games, DRM content, or reliable background keyboard/mouse injection. Coordinate input is foreground-only and gated. See [security reporting](SECURITY.md), the [threat model](THREAT_MODEL.md), and [upgrade/uninstall/local-data guidance](references/安装升级与卸载.md).
